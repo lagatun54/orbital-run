@@ -66,6 +66,19 @@ func run() error {
 	api := allowFrontend(frontendOrigin, proxy)
 	mux.Handle("GET /api/leaderboard", api)
 	mux.Handle("GET /api/results/{id}", api)
+	mux.Handle("POST /api/local-results", api)
+	mux.HandleFunc("OPTIONS /api/local-results", func(w http.ResponseWriter, r *http.Request) {
+		if frontendOrigin == "" || r.Header.Get("Origin") != frontendOrigin ||
+			r.Header.Get("Access-Control-Request-Method") != http.MethodPost {
+			w.WriteHeader(http.StatusForbidden)
+			return
+		}
+		w.Header().Set("Access-Control-Allow-Origin", frontendOrigin)
+		w.Header().Set("Access-Control-Allow-Methods", http.MethodPost)
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+		w.Header().Add("Vary", "Origin")
+		w.WriteHeader(http.StatusNoContent)
+	})
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		if !conn.IsConnected() {
 			http.Error(w, "broker disconnected", http.StatusServiceUnavailable)
@@ -97,7 +110,7 @@ func run() error {
 	return err
 }
 
-// Cross-origin leaderboard and result requests are simple GETs.
+// Allow the configured frontend to read API responses.
 func allowFrontend(origin string, next http.Handler) http.Handler {
 	if origin == "" {
 		return next

@@ -27,6 +27,7 @@ import (
 var schema string
 
 var matchID = regexp.MustCompile(`^[A-Z2-7]{26}$`)
+var localMatchID = regexp.MustCompile(`^local-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
 
 type rankedResult struct {
 	arena.Result
@@ -82,7 +83,7 @@ func run() error {
 	mux.HandleFunc("GET /api/leaderboard", func(w http.ResponseWriter, r *http.Request) {
 		query, cancel := context.WithTimeout(r.Context(), 2*time.Second)
 		defer cancel()
-		rows, err := db.Query(query, `SELECT id, name, score, bot_score, finished_at
+		rows, err := db.Query(query, `SELECT id, name, score, bot_score, finished_at, local
 			FROM match_results ORDER BY score DESC, finished_at ASC, id ASC LIMIT 10`)
 		if err != nil {
 			unavailable(w, err)
@@ -92,7 +93,7 @@ func run() error {
 		defer rows.Close()
 		for rows.Next() {
 			var result arena.Result
-			if err := rows.Scan(&result.ID, &result.Name, &result.Score, &result.BotScore, &result.FinishedAt); err != nil {
+			if err := rows.Scan(&result.ID, &result.Name, &result.Score, &result.BotScore, &result.FinishedAt, &result.Local); err != nil {
 				unavailable(w, err)
 				return
 			}
@@ -106,19 +107,19 @@ func run() error {
 	})
 	mux.HandleFunc("GET /api/results/{id}", func(w http.ResponseWriter, r *http.Request) {
 		id := r.PathValue("id")
-		if !matchID.MatchString(id) {
+		if !matchID.MatchString(id) && !localMatchID.MatchString(id) {
 			http.NotFound(w, r)
 			return
 		}
 		query, cancel := context.WithTimeout(r.Context(), 2*time.Second)
 		defer cancel()
 		var result rankedResult
-		err := db.QueryRow(query, `SELECT target.id, target.name, target.score, target.bot_score, target.finished_at,
+		err := db.QueryRow(query, `SELECT target.id, target.name, target.score, target.bot_score, target.finished_at, target.local,
 			1 + (SELECT count(*) FROM match_results AS ahead
 				WHERE ahead.score > target.score
 					OR (ahead.score = target.score AND (ahead.finished_at, ahead.id) < (target.finished_at, target.id)))
 			FROM match_results AS target WHERE target.id = $1`, id).
-			Scan(&result.ID, &result.Name, &result.Score, &result.BotScore, &result.FinishedAt, &result.Rank)
+			Scan(&result.ID, &result.Name, &result.Score, &result.BotScore, &result.FinishedAt, &result.Local, &result.Rank)
 		if errors.Is(err, pgx.ErrNoRows) {
 			http.NotFound(w, r)
 			return
@@ -129,6 +130,8 @@ func run() error {
 		}
 		respond(w, result)
 	})
+
+	mux.HandleFunc("POST /api/local-results", localResults(db))
 
 	server := &http.Server{
 		Addr: env.Get("SCORES_LISTEN", ":8081"), Handler: mux,

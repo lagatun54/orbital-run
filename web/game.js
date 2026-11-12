@@ -1,6 +1,7 @@
 import { createScene, standby } from './scene.js'
 import { backendOrigin } from './config.js'
 import { createLocalMatch } from './local-match.js'
+import { forgetLocalResult, pendingLocalResults, saveLocalResult } from './local-results.js'
 
 const endpointFor = path => new URL(path, backendOrigin || location.origin)
 
@@ -25,11 +26,17 @@ let sentDirection = -1
 let generation = 0
 let savedID
 let render
+let syncingLocal = false
+let latestLocal
 
 if (backendOrigin === null) {
   get('leader-state').textContent = 'Рейтинг появится после подключения игрового сервера.'
 } else {
   void refreshLeaderboard()
+  void syncLocalResults()
+  window.addEventListener('online', syncLocalResults)
+  window.addEventListener('focus', syncLocalResults)
+  setInterval(syncLocalResults, 20000)
 }
 try {
   render = await createScene(get('canvas-host'))
@@ -51,7 +58,7 @@ form.addEventListener('submit', event => {
   phase = 'connecting'
   play.disabled = true
   if (preferLocal) {
-    startLocalRound()
+    startLocalRound(name, current)
     return
   }
   play.textContent = 'Подключение…'
@@ -94,7 +101,7 @@ form.addEventListener('submit', event => {
     }
     preferLocal = true
     if (phase === 'connecting') {
-      startLocalRound()
+      startLocalRound(name, current)
       return
     }
     phase = 'ready'
@@ -103,7 +110,7 @@ form.addEventListener('submit', event => {
   })
 })
 
-function startLocalRound() {
+function startLocalRound(name, current) {
   localRound = true
   phase = 'connecting'
   get('last-result').hidden = true
@@ -117,13 +124,51 @@ function startLocalRound() {
       showFrame(frame)
       const result = frame.player.score - frame.bot.score
       showStart(result > 0 ? 'Победа!' : result < 0 ? 'Бот победил' : 'Ничья', 'Играть ещё')
-      announce('Локальный раунд завершён. Очки не попадают в общий рейтинг.')
+      const localResult = {
+        id: 'local-' + crypto.randomUUID(),
+        name,
+        score: frame.player.score,
+        botScore: frame.bot.score,
+      }
+      latestLocal = { id: localResult.id, generation: current }
+      const stored = saveLocalResult(localResult)
+      announce(stored
+        ? 'Локальный результат сохранён. Отправим его в рейтинг, когда сервер ответит.'
+        : 'Результат сохранён в этой вкладке. Оставьте её открытой до отправки.')
+      void syncLocalResults()
       return
     }
     renderRound(frame)
     requestAnimationFrame(tick)
   }
   requestAnimationFrame(tick)
+}
+
+async function syncLocalResults() {
+  if (backendOrigin === null || syncingLocal) return
+  syncingLocal = true
+  let changed = false
+  try {
+    for (const result of pendingLocalResults()) {
+      const response = await fetch(endpointFor('/api/local-results'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(result),
+        signal: AbortSignal.timeout(5000),
+      })
+      if (!response.ok) break
+      forgetLocalResult(result.id)
+      changed = true
+      if (latestLocal?.id === result.id && latestLocal.generation === generation) {
+        void waitForResult(result.id, generation)
+      }
+    }
+  } catch {
+    // The next timer or online event retries the unsent result.
+  } finally {
+    syncingLocal = false
+    if (changed) void refreshLeaderboard()
+  }
 }
 
 function renderRound(frame) {
@@ -223,7 +268,8 @@ async function refreshLeaderboard() {
     const rows = results.map((result, index) => {
       const row = document.createElement('tr')
       if (result.id === savedID) row.classList.add('current')
-      for (const value of [index + 1, result.name, result.score]) {
+      const name = result.local ? result.name + ' (локально)' : result.name
+      for (const value of [index + 1, name, result.score]) {
         row.insertCell().textContent = value
       }
       return row

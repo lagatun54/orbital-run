@@ -6,5 +6,7 @@ CREATE TABLE IF NOT EXISTS match_results (
     finished_at timestamptz NOT NULL
 );
 
+ALTER TABLE match_results ADD COLUMN IF NOT EXISTS local boolean NOT NULL DEFAULT false;
+
 CREATE INDEX IF NOT EXISTS match_results_leaderboard_idx
     ON match_results (score DESC, finished_at ASC, id ASC);

@@ -8,12 +8,9 @@ import (
 	"log"
 	"net"
 	"net/http"
-	"strings"
 	"sync/atomic"
 	"syscall"
 	"time"
-	"unicode"
-	"unicode/utf8"
 
 	"github.com/coder/websocket"
 	"github.com/coder/websocket/wsjson"
@@ -66,7 +63,7 @@ func (s matchServer) play(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		return
 	}
-	name := pilotName(first.Name)
+	name := arena.PilotName(first.Name)
 
 	bot, err := net.DialUDP("udp", nil, s.bot)
 	if err != nil {
@@ -169,20 +166,4 @@ func keys(mask uint32) arena.Point {
 		X: float64(int((mask>>3)&1) - int((mask>>2)&1)),
 		Y: float64(int((mask>>1)&1) - int(mask&1)),
 	}
-}
-
-func pilotName(raw string) string {
-	var name strings.Builder
-	for _, r := range strings.TrimSpace(raw) {
-		if unicode.IsLetter(r) || unicode.IsNumber(r) || r == ' ' || r == '-' || r == '_' {
-			name.WriteRune(r)
-			if utf8.RuneCountInString(name.String()) == 20 {
-				break
-			}
-		}
-	}
-	if clean := strings.TrimSpace(name.String()); clean != "" {
-		return clean
-	}
-	return "Пилот"
 }

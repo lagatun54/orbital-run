@@ -39,6 +39,7 @@ type Result struct {
 	Score      int       `json:"score"`
 	BotScore   int       `json:"botScore"`
 	FinishedAt time.Time `json:"finishedAt"`
+	Local      bool      `json:"local,omitempty"`
 }
 
 type BotFrame struct {

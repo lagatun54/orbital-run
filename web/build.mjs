@@ -12,7 +12,7 @@ if (backendURL) {
 
 await rm('dist', { recursive: true, force: true })
 await mkdir('dist', { recursive: true })
-for (const file of ['index.html', 'style.css', 'game.js', 'scene.js', 'local-match.js']) {
+for (const file of ['index.html', 'style.css', 'game.js', 'scene.js', 'local-match.js', 'local-results.js']) {
   await cp(`web/${file}`, `dist/${file}`)
 }
 for (const file of ['pixi.min.mjs', 'pixi.min.mjs.map']) {
