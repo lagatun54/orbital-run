@@ -1,0 +1,26 @@
+(northflank_upstream) {
+	reverse_proxy {$ORBITAL_API_ORIGIN} {
+		header_up Host {upstream_hostport}
+	}
+}
+
+:{$PORT:10000} {
+	@read {
+		method GET
+		path /healthz /api/leaderboard /api/results/* /ws
+	}
+	@write {
+		method POST OPTIONS
+		path /api/local-results
+	}
+
+	handle @read {
+		import northflank_upstream
+	}
+	handle @write {
+		import northflank_upstream
+	}
+	handle {
+		respond 404
+	}
+}

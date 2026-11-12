@@ -162,6 +162,13 @@ PostgreSQL и JetStream сохраняются в томах Compose.
 Проверьте `/api/leaderboard` на публичном адресе сервиса и используйте этот
 адрес в `BACKEND_URL` при следующем запуске **Frontend**.
 
+Если прямой адрес Northflank недоступен из сети игрока, можно развернуть
+[прокси на Render](https://render.com/deploy?repo=https%3A%2F%2Fgithub.com%2Flagatun54%2Forbital-run).
+Прокси передаёт API и WebSocket на Northflank. После запуска проверьте
+`/api/leaderboard` по адресу Render из нужной сети, задайте этот адрес в
+`BACKEND_URL` и запустите **Frontend**. На бесплатном тарифе первый запрос
+после простоя может занять около минуты.
+
 ## Публичное демо на одном хосте
 
 Для живого демо понадобится Linux-хост с Docker Compose и домен, указывающий на его IP. Откройте порты 80 и 443. Caddy получит сертификат и будет проксировать HTTPS и WebSocket к игре. UDP-порт бота, NATS и PostgreSQL доступны внутри сети Compose.

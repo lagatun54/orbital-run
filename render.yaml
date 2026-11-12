@@ -1,0 +1,12 @@
+services:
+  - type: web
+    name: orbital-run-api
+    runtime: docker
+    plan: free
+    autoDeployTrigger: 'off'
+    dockerContext: ./deploy/render-relay
+    dockerfilePath: ./deploy/render-relay/Dockerfile
+    healthCheckPath: /healthz
+    envVars:
+      - key: ORBITAL_API_ORIGIN
+        value: https://p01--orbital-run--pzk648wcnw7n.code.run
