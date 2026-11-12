@@ -1,5 +1,6 @@
 import { createScene, standby } from './scene.js'
 import { backendOrigin } from './config.js'
+import { createLocalMatch } from './local-match.js'
 
 const endpointFor = path => new URL(path, backendOrigin || location.origin)
 
@@ -17,6 +18,8 @@ const keys = new Map([
 const pressed = new Set()
 const pointers = new Map()
 let socket
+let localRound = false
+let preferLocal = backendOrigin === null
 let phase = 'ready'
 let sentDirection = -1
 let generation = 0
@@ -31,8 +34,8 @@ if (backendOrigin === null) {
 try {
   render = await createScene(get('canvas-host'))
   render(standby, true)
-  play.disabled = backendOrigin === null
-  announce(backendOrigin === null ? 'Игровой сервер пока не подключён.' : 'Арена готова.')
+  play.disabled = false
+  announce(preferLocal ? 'Доступна локальная игра с ботом.' : 'Арена готова.')
 } catch (error) {
   console.error(error)
   announce('Не удалось загрузить арену. Попробуйте открыть игру в браузере с WebGL.')
@@ -40,13 +43,17 @@ try {
 
 form.addEventListener('submit', event => {
   event.preventDefault()
-  if (backendOrigin === null || !render || socket) return
+  if (!render || socket || localRound) return
   const current = ++generation
   const name = get('pilot').value
   clearControls()
   sentDirection = -1
   phase = 'connecting'
   play.disabled = true
+  if (preferLocal) {
+    startLocalRound()
+    return
+  }
   play.textContent = 'Подключение…'
   announce('Подключаемся к арене.')
   const endpoint = endpointFor('/ws')
@@ -75,17 +82,7 @@ form.addEventListener('submit', event => {
       if (frame.queued) void waitForResult(result.id, current)
       return
     }
-    const previous = phase
-    phase = frame.phase
-    render(frame, previous === 'connecting')
-    showFrame(frame)
-    form.hidden = true
-    countdown.hidden = phase !== 'countdown'
-    if (phase === 'countdown') countdown.textContent = String(Math.max(1, Math.ceil(frame.remainingMs / 1000)))
-    if (phase !== previous) {
-      announce(phase === 'countdown' ? 'Готовьтесь к старту.' : 'Раунд начался. Собирайте кристаллы!')
-      sendDirection()
-    }
+    renderRound(frame)
   })
   match.addEventListener('close', () => {
     clearTimeout(timeout)
@@ -95,14 +92,57 @@ form.addEventListener('submit', event => {
       play.disabled = false
       return
     }
+    preferLocal = true
+    if (phase === 'connecting') {
+      startLocalRound()
+      return
+    }
     phase = 'ready'
-    showStart('Связь прервалась', 'Попробовать снова')
-    announce('Подключение к арене закрыто. Начните новый раунд.')
+    showStart('Связь прервалась', 'Играть локально')
+    announce('Сервер отключился. Можно начать новый раунд с ботом.')
   })
 })
 
+function startLocalRound() {
+  localRound = true
+  phase = 'connecting'
+  get('last-result').hidden = true
+  const step = createLocalMatch(performance.now())
+  function tick(now) {
+    const frame = step(now, currentDirection())
+    if (frame.phase === 'finished') {
+      phase = 'finished'
+      localRound = false
+      clearControls()
+      showFrame(frame)
+      const result = frame.player.score - frame.bot.score
+      showStart(result > 0 ? 'Победа!' : result < 0 ? 'Бот победил' : 'Ничья', 'Играть ещё')
+      announce('Локальный раунд завершён. Очки не попадают в общий рейтинг.')
+      return
+    }
+    renderRound(frame)
+    requestAnimationFrame(tick)
+  }
+  requestAnimationFrame(tick)
+}
+
+function renderRound(frame) {
+  const previous = phase
+  phase = frame.phase
+  render(frame, previous === 'connecting')
+  showFrame(frame)
+  form.hidden = true
+  countdown.hidden = phase !== 'countdown'
+  if (phase === 'countdown') countdown.textContent = String(Math.max(1, Math.ceil(frame.remainingMs / 1000)))
+  if (phase !== previous) {
+    const message = phase === 'countdown' ? 'Готовьтесь к старту.' : 'Раунд начался. Собирайте кристаллы!'
+    announce(localRound ? 'Локальная игра с ботом. ' + message : message)
+    sendDirection()
+  }
+}
+
 window.addEventListener('keydown', event => {
-  if (!socket || !keys.has(event.code) || event.target instanceof HTMLInputElement) return
+  if ((!socket && !localRound) || !keys.has(event.code) || event.target instanceof HTMLInputElement) return
   event.preventDefault()
   pressed.add(event.code)
   sendDirection()
@@ -118,7 +158,7 @@ document.addEventListener('visibilitychange', () => {
 for (const button of controls) {
   button.setAttribute('aria-pressed', 'false')
   button.addEventListener('pointerdown', event => {
-    if (!socket || event.button !== 0) return
+    if ((!socket && !localRound) || event.button !== 0) return
     button.setPointerCapture(event.pointerId)
     pointers.set(event.pointerId, Number(button.dataset.direction))
     sendDirection()
@@ -136,10 +176,15 @@ function clearControls() {
   sendDirection()
 }
 
-function sendDirection() {
+function currentDirection() {
   let direction = 0
   for (const key of pressed) direction |= keys.get(key)
   for (const touch of pointers.values()) direction |= touch
+  return direction
+}
+
+function sendDirection() {
+  const direction = currentDirection()
   for (const button of controls) {
     button.setAttribute('aria-pressed', Boolean(direction & Number(button.dataset.direction)))
   }
