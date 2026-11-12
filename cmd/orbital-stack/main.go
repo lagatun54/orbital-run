@@ -12,10 +12,11 @@ import (
 )
 
 func main() {
-	for _, key := range []string{"NATS_URL", "DATABASE_URL"} {
-		if os.Getenv(key) == "" {
-			log.Fatalf("%s is required", key)
-		}
+	if os.Getenv("KAFKA_BROKERS") == "" && os.Getenv("NATS_URL") == "" {
+		log.Fatal("KAFKA_BROKERS or NATS_URL is required")
+	}
+	if os.Getenv("DATABASE_URL") == "" {
+		log.Fatal("DATABASE_URL is required")
 	}
 	if err := run(); err != nil {
 		log.Fatal(err)

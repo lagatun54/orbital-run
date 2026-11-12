@@ -2,32 +2,46 @@ package broker
 
 import (
 	"context"
-	"time"
+	"os"
 
-	"github.com/nats-io/nats.go"
-	"github.com/nats-io/nats.go/jetstream"
+	"orbitalrun/internal/env"
 )
 
-const Subject = "matches.finished"
+const topic = "matches.finished"
+const scoresGroup = "scores"
 
-func Open(ctx context.Context, url string) (*nats.Conn, jetstream.JetStream, jetstream.Stream, error) {
-	conn, err := nats.Connect(url, nats.Timeout(3*time.Second), nats.MaxReconnects(-1))
-	if err != nil {
-		return nil, nil, nil, err
+type Producer interface {
+	Publish(context.Context, string, []byte) error
+	Ready(context.Context) error
+	Close()
+}
+
+type Consumer interface {
+	Run(context.Context, func(context.Context, []byte) error) error
+	Close()
+}
+
+func OpenProducer(ctx context.Context) (Producer, error) {
+	if url := legacyNATSURL(); url != "" {
+		return openNATS(ctx, url)
 	}
-	js, err := jetstream.New(conn)
-	if err != nil {
-		conn.Close()
-		return nil, nil, nil, err
+	return openKafka(ctx)
+}
+
+func OpenConsumer(ctx context.Context) (Consumer, error) {
+	if url := legacyNATSURL(); url != "" {
+		return openNATSConsumer(ctx, url)
 	}
-	stream, err := js.CreateOrUpdateStream(ctx, jetstream.StreamConfig{
-		Name: "MATCH_RESULTS", Subjects: []string{Subject}, Storage: jetstream.FileStorage,
-		Retention: jetstream.WorkQueuePolicy, MaxAge: 7 * 24 * time.Hour, MaxBytes: 64 << 20,
-		Discard: jetstream.DiscardNew,
-	})
-	if err != nil {
-		conn.Close()
-		return nil, nil, nil, err
+	return openKafkaConsumer(ctx)
+}
+
+func legacyNATSURL() string {
+	if os.Getenv("KAFKA_BROKERS") != "" {
+		return ""
 	}
-	return conn, js, stream, nil
+	return os.Getenv("NATS_URL")
+}
+
+func kafkaBrokers() string {
+	return env.Get("KAFKA_BROKERS", "127.0.0.1:9092")
 }

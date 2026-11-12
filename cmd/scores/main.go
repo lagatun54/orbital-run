@@ -5,6 +5,7 @@ import (
 	_ "embed"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log"
 	"net"
 	"net/http"
@@ -17,7 +18,6 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/nats-io/nats.go/jetstream"
 	"orbitalrun/internal/arena"
 	"orbitalrun/internal/broker"
 	"orbitalrun/internal/env"
@@ -54,30 +54,12 @@ func run() error {
 		return err
 	}
 
-	conn, _, stream, err := broker.Open(startup, env.Get("NATS_URL", "nats://127.0.0.1:4222"))
+	consumer, err := broker.OpenConsumer(startup)
+	cancel()
 	if err != nil {
 		return err
 	}
-	defer conn.Close()
-	consumer, err := stream.CreateOrUpdateConsumer(startup, jetstream.ConsumerConfig{
-		Durable: "scores", AckPolicy: jetstream.AckExplicitPolicy, AckWait: 15 * time.Second,
-		FilterSubject: broker.Subject, MaxAckPending: 64,
-	})
-	if err != nil {
-		return err
-	}
-	messages, err := consumer.Consume(func(message jetstream.Msg) {
-		save(ctx, db, message)
-	}, jetstream.PullMaxMessages(16), jetstream.ConsumeErrHandler(func(_ jetstream.ConsumeContext, err error) {
-		log.Printf("consume match results: %v", err)
-	}))
-	if err != nil {
-		return err
-	}
-	defer func() {
-		messages.Stop()
-		<-messages.Closed()
-	}()
+	defer consumer.Close()
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/leaderboard", func(w http.ResponseWriter, r *http.Request) {
@@ -144,24 +126,30 @@ func run() error {
 		defer cancel()
 		_ = server.Shutdown(shutdown)
 	}()
+	consumed := make(chan error, 1)
+	go func() {
+		consumed <- consumer.Run(ctx, func(ctx context.Context, payload []byte) error {
+			return save(ctx, db, payload)
+		})
+		stop()
+	}()
 	log.Printf("scores listening on %s", server.Addr)
 	err = server.ListenAndServe()
+	stop()
+	consumeErr := <-consumed
 	if errors.Is(err, http.ErrServerClosed) {
-		return nil
+		return consumeErr
 	}
 	return err
 }
 
-func save(ctx context.Context, db *pgxpool.Pool, message jetstream.Msg) {
+func save(ctx context.Context, db *pgxpool.Pool, payload []byte) error {
 	var result arena.Result
-	if err := json.Unmarshal(message.Data(), &result); err != nil || !matchID.MatchString(result.ID) ||
+	if err := json.Unmarshal(payload, &result); err != nil || !matchID.MatchString(result.ID) ||
 		utf8.RuneCountInString(result.Name) < 1 || utf8.RuneCountInString(result.Name) > 20 ||
 		result.Score < 0 || result.BotScore < 0 || result.FinishedAt.IsZero() {
 		log.Print("discard invalid match result")
-		if err := message.Term(); err != nil {
-			log.Printf("terminate delivery: %v", err)
-		}
-		return
+		return nil
 	}
 	write, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
@@ -169,15 +157,9 @@ func save(ctx context.Context, db *pgxpool.Pool, message jetstream.Msg) {
 		VALUES ($1, $2, $3, $4, $5) ON CONFLICT (id) DO NOTHING`,
 		result.ID, result.Name, result.Score, result.BotScore, result.FinishedAt)
 	if err != nil {
-		log.Printf("store match %s: %v", result.ID, err)
-		if err := message.NakWithDelay(2 * time.Second); err != nil {
-			log.Printf("reschedule match %s: %v", result.ID, err)
-		}
-		return
+		return fmt.Errorf("store match %s: %w", result.ID, err)
 	}
-	if err := message.Ack(); err != nil {
-		log.Printf("ack match %s: %v", result.ID, err)
-	}
+	return nil
 }
 
 func respond(w http.ResponseWriter, data any) {

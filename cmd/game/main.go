@@ -14,7 +14,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/nats-io/nats.go/jetstream"
 	"orbitalrun/internal/arena"
 	"orbitalrun/internal/broker"
 	"orbitalrun/internal/env"
@@ -30,12 +29,12 @@ func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	startup, cancel := context.WithTimeout(ctx, 8*time.Second)
-	conn, js, _, err := broker.Open(startup, env.Get("NATS_URL", "nats://127.0.0.1:4222"))
+	producer, err := broker.OpenProducer(startup)
 	cancel()
 	if err != nil {
 		return err
 	}
-	defer conn.Close()
+	defer producer.Close()
 
 	bot, err := net.ResolveUDPAddr("udp", env.Get("BOT_ADDRESS", "127.0.0.1:9001"))
 	if err != nil {
@@ -57,8 +56,7 @@ func run() error {
 		if err != nil {
 			return err
 		}
-		_, err = js.Publish(ctx, broker.Subject, payload, jetstream.WithMsgID(result.ID))
-		return err
+		return producer.Publish(ctx, result.ID, payload)
 	}
 
 	mux := http.NewServeMux()
@@ -79,8 +77,10 @@ func run() error {
 		w.Header().Add("Vary", "Origin")
 		w.WriteHeader(http.StatusNoContent)
 	})
-	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
-		if !conn.IsConnected() {
+	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
+		probe, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+		defer cancel()
+		if err := producer.Ready(probe); err != nil {
 			http.Error(w, "broker disconnected", http.StatusServiceUnavailable)
 			return
 		}

@@ -2,7 +2,7 @@ x-build: &app-build
   context: .
   target: ${APP_TARGET:-local}
   args:
-    GOPROXY: ${GO_MODULE_PROXY:-https://proxy.golang.org,direct}
+    GOPROXY: "${GO_MODULE_PROXY:-https://proxy.golang.org|direct}"
 
 services:
   postgres:
@@ -20,18 +20,51 @@ services:
       retries: 20
     restart: unless-stopped
 
-  nats:
-    image: nats:2.14-alpine
-    command: ["-js", "-sd", "/data"]
+  kafka:
+    image: apache/kafka:4.1.2
+    environment:
+      KAFKA_NODE_ID: "1"
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: "1"
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+      KAFKA_LOG_DIRS: /var/lib/kafka/data
+      KAFKA_HEAP_OPTS: -Xms256m -Xmx512m
     volumes:
-      - nats-data:/data
+      - kafka-data:/var/lib/kafka/data
+    healthcheck:
+      test: ["CMD", "/opt/kafka/bin/kafka-topics.sh", "--bootstrap-server", "kafka:9092", "--list"]
+      interval: 5s
+      timeout: 5s
+      retries: 15
     restart: unless-stopped
+
+  kafka-init:
+    image: apache/kafka:4.1.2
+    entrypoint: ["/opt/kafka/bin/kafka-topics.sh"]
+    command:
+      - --bootstrap-server
+      - kafka:9092
+      - --create
+      - --if-not-exists
+      - --topic
+      - matches.finished
+      - --partitions
+      - "3"
+      - --replication-factor
+      - "1"
+    depends_on:
+      kafka:
+        condition: service_healthy
 
   game:
     image: ${BACKEND_IMAGE:-orbital-run:local}
     build: *app-build
     environment:
-      NATS_URL: nats://nats:4222
+      KAFKA_BROKERS: kafka:9092
       BOT_ADDRESS: bot:9001
       SCORES_URL: http://scores:8081
       FRONTEND_ORIGIN: ${FRONTEND_ORIGIN:-}
@@ -43,8 +76,8 @@ services:
     ports:
       - "127.0.0.1:${GAME_PORT:-8080}:8080"
     depends_on:
-      nats:
-        condition: service_started
+      kafka-init:
+        condition: service_completed_successfully
       bot:
         condition: service_started
       scores:
@@ -62,13 +95,13 @@ services:
     build: *app-build
     command: ["scores"]
     environment:
-      NATS_URL: nats://nats:4222
+      KAFKA_BROKERS: kafka:9092
       DATABASE_URL: "host=postgres user=orbital password=${POSTGRES_PASSWORD:-orbital} dbname=orbital sslmode=disable"
     depends_on:
       postgres:
         condition: service_healthy
-      nats:
-        condition: service_started
+      kafka-init:
+        condition: service_completed_successfully
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8081/api/leaderboard"]
       interval: 5s
@@ -78,4 +111,4 @@ services:
 
 volumes:
   postgres-data:
-  nats-data:
+  kafka-data:

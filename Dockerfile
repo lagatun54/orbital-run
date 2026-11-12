@@ -7,8 +7,9 @@ RUN npm run build
 
 FROM --platform=$BUILDPLATFORM golang:1.26-alpine AS go-build
 ARG TARGETOS TARGETARCH
-ARG GOPROXY
+ARG GOPROXY=https://proxy.golang.org|direct
 WORKDIR /src
+RUN apk add --no-cache git
 COPY go.mod go.sum ./
 RUN go mod download
 COPY cmd ./cmd
