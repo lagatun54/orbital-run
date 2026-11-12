@@ -21,6 +21,11 @@ COPY --from=go-build /out/ /usr/local/bin/
 USER 65532:65532
 CMD ["game"]
 
+FROM backend AS northflank
+ENV BOT_LISTEN=127.0.0.1:9001 SCORES_LISTEN=127.0.0.1:8081
+EXPOSE 8080
+CMD ["orbital-stack"]
+
 FROM backend AS local
 COPY --from=frontend /src/dist ./dist
 ENV WEB_DIR=/app/dist

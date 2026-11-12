@@ -139,6 +139,23 @@ BACKEND_IMAGE='ghcr.io/owner/repo-backend@sha256:…' \
 Для отката можно запустить ту же команду с предыдущим digest. Данные
 PostgreSQL и JetStream сохраняются в томах Compose.
 
+### Демо на Northflank Sandbox
+
+В проекте нужны PostgreSQL 17 и два сервиса:
+
+- `orbital-nats` запускает `nats:2.14-alpine` с аргументами
+  `-js -sd /tmp/jetstream`. Порт TCP `4222` доступен внутри проекта.
+  Без постоянного тома очередь может сброситься при замене контейнера.
+- `orbital-run` собирается из корневого `Dockerfile` с target `northflank`.
+  В одном контейнере запускаются `game`, `bot` и `scores`. Откройте только
+  HTTP-порт `8080`, чтобы Northflank выдал адрес HTTPS.
+
+В runtime-переменных `orbital-run` задайте `NATS_URL=nats://orbital-nats:4222`
+и `FRONTEND_ORIGIN=https://lagatun54.github.io`. Подключите
+`POSTGRES_URI` из addon через Secret Group с алиасом `DATABASE_URL`.
+Проверьте `/api/leaderboard` на публичном адресе сервиса и используйте этот
+адрес в `BACKEND_URL` при следующем запуске **Frontend**.
+
 ## Публичное демо на одном хосте
 
 Для живого демо понадобится Linux-хост с Docker Compose и домен, указывающий на его IP. Откройте порты 80 и 443. Caddy получит сертификат и будет проксировать HTTPS и WebSocket к игре. UDP-порт бота, NATS и PostgreSQL доступны внутри сети Compose.
