@@ -1,0 +1,23 @@
+name: Verify
+on: [push, pull_request]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker compose config --quiet
+      - run: docker compose up --build -d --wait --wait-timeout 90
+      - name: Smoke test the bundled demo
+        run: |
+          curl -fsS -o /dev/null http://127.0.0.1:8080/
+          curl -fsS http://127.0.0.1:8080/config.js | grep -Fx 'export const backendOrigin = ""'
+          curl -fsS -o /dev/null http://127.0.0.1:8080/api/leaderboard
+      - if: failure()
+        run: docker compose logs
+      - if: always()
+        run: docker compose down -v

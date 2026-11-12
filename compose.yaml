@@ -1,0 +1,81 @@
+x-build: &app-build
+  context: .
+  target: ${APP_TARGET:-local}
+  args:
+    GOPROXY: ${GO_MODULE_PROXY:-https://proxy.golang.org,direct}
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: orbital
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-orbital}
+      POSTGRES_DB: orbital
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U orbital -d orbital"]
+      interval: 2s
+      timeout: 2s
+      retries: 20
+    restart: unless-stopped
+
+  nats:
+    image: nats:2.14-alpine
+    command: ["-js", "-sd", "/data"]
+    volumes:
+      - nats-data:/data
+    restart: unless-stopped
+
+  game:
+    image: ${BACKEND_IMAGE:-orbital-run:local}
+    build: *app-build
+    environment:
+      NATS_URL: nats://nats:4222
+      BOT_ADDRESS: bot:9001
+      SCORES_URL: http://scores:8081
+      FRONTEND_ORIGIN: ${FRONTEND_ORIGIN:-}
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+    ports:
+      - "127.0.0.1:${GAME_PORT:-8080}:8080"
+    depends_on:
+      nats:
+        condition: service_started
+      bot:
+        condition: service_started
+      scores:
+        condition: service_started
+    restart: unless-stopped
+
+  bot:
+    image: ${BACKEND_IMAGE:-orbital-bot:local}
+    build: *app-build
+    command: ["bot"]
+    restart: unless-stopped
+
+  scores:
+    image: ${BACKEND_IMAGE:-orbital-scores:local}
+    build: *app-build
+    command: ["scores"]
+    environment:
+      NATS_URL: nats://nats:4222
+      DATABASE_URL: "host=postgres user=orbital password=${POSTGRES_PASSWORD:-orbital} dbname=orbital sslmode=disable"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      nats:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8081/api/leaderboard"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+    restart: unless-stopped
+
+volumes:
+  postgres-data:
+  nats-data:

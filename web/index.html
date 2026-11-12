@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#0c1420">
+  <meta name="description" content="30 секунд на орбитальной арене. Соберите больше кристаллов, чем бот.">
+  <title>Орбитальный сбор</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@600;700&family=IBM+Plex+Mono:wght@400;500;600&family=Nunito:wght@700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="./style.css">
+  <script type="module" src="./game.js"></script>
+</head>
+<body>
+  <main class="shell">
+    <header class="masthead">
+      <div class="brand">
+        <span class="mark" aria-hidden="true">◈</span>
+        <h1>Орбитальный сбор</h1>
+      </div>
+      <p>30 секунд. Один соперник. Соберите больше кристаллов.</p>
+    </header>
+
+    <div class="layout">
+      <section class="flight" aria-label="Игровая арена">
+        <div class="hud">
+          <div><span>Вы</span><strong id="player-score">00</strong></div>
+          <div class="clock"><span>Таймер</span><strong id="timer">00:30</strong></div>
+          <div><span>Бот</span><strong id="bot-score">00</strong></div>
+        </div>
+
+        <div class="arena">
+          <div id="canvas-host" aria-hidden="true"></div>
+          <div id="overlay" class="overlay">
+            <form id="start-form">
+              <h2 id="round-title">Готовы к старту?</h2>
+              <div id="name-field" class="name-field">
+                <label for="pilot">Имя пилота <small>по желанию</small></label>
+                <input id="pilot" name="pilot" maxlength="20" placeholder="Пилот" autocomplete="off">
+              </div>
+              <button type="submit" id="play" disabled>Играть</button>
+            </form>
+            <strong id="countdown" class="countdown" aria-hidden="true" hidden></strong>
+          </div>
+        </div>
+
+        <div class="flight-footer">
+          <p id="status" role="status">Загружаем арену…</p>
+          <p class="keyboard"><kbd>WASD</kbd> или <kbd>↑ ↓ ← →</kbd></p>
+        </div>
+        <div class="direction-pad" aria-label="Управление кораблём">
+          <button type="button" data-direction="4" aria-label="Влево">←</button>
+          <button type="button" data-direction="1" aria-label="Вверх">↑</button>
+          <button type="button" data-direction="2" aria-label="Вниз">↓</button>
+          <button type="button" data-direction="8" aria-label="Вправо">→</button>
+        </div>
+      </section>
+
+      <aside class="leaderboard" aria-labelledby="leaderboard-title">
+        <h2 id="leaderboard-title">Таблица рекордов</h2>
+        <div id="last-result" class="last-result" hidden>
+          <span>Последний раунд</span>
+          <strong id="last-rank"></strong>
+        </div>
+        <table>
+          <thead><tr><th scope="col">#</th><th scope="col">Пилот</th><th scope="col">Очки</th></tr></thead>
+          <tbody id="leaders"></tbody>
+        </table>
+        <p id="leader-state" class="leader-state">Загружаем результаты…</p>
+      </aside>
+    </div>
+  </main>
+</body>
+</html>

@@ -1,0 +1,19 @@
+services:
+  caddy:
+    image: caddy:2-alpine
+    environment:
+      DEMO_DOMAIN: ${DEMO_DOMAIN:?set DEMO_DOMAIN to the public hostname}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      - game
+    restart: unless-stopped
+
+volumes:
+  caddy-data:
+  caddy-config:

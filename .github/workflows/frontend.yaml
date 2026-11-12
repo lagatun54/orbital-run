@@ -1,0 +1,62 @@
+name: Frontend
+
+on:
+  pull_request:
+    paths:
+      - 'web/**'
+      - 'package*.json'
+      - '.github/workflows/frontend.yaml'
+  push:
+    paths:
+      - 'web/**'
+      - 'package*.json'
+      - '.github/workflows/frontend.yaml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: frontend-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Build static files
+        env:
+          STANDALONE_FRONTEND: 'true'
+          BACKEND_URL: ${{ vars.BACKEND_URL }}
+        run: |
+          if [[ -n "$BACKEND_URL" && "$BACKEND_URL" != https://* ]]; then
+            echo "::error::BACKEND_URL for GitHub Pages must use https://"
+            exit 1
+          fi
+          npm run build
+      - uses: actions/upload-pages-artifact@v4
+        if: github.event_name != 'pull_request' && github.ref_name == github.event.repository.default_branch
+        with:
+          path: dist
+
+  deploy:
+    if: github.event_name != 'pull_request' && github.ref_name == github.event.repository.default_branch
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.pages.outputs.page_url }}
+    steps:
+      - uses: actions/deploy-pages@v4
+        id: pages
