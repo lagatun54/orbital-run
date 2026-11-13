@@ -10,3 +10,6 @@ ALTER TABLE match_results ADD COLUMN IF NOT EXISTS local boolean NOT NULL DEFAUL
 
 CREATE INDEX IF NOT EXISTS match_results_leaderboard_idx
     ON match_results (score DESC, finished_at ASC, id ASC);
+
+-- A smaller index for counting higher scores without reading the leaderboard keys.
+CREATE INDEX IF NOT EXISTS match_results_score_idx ON match_results (score);

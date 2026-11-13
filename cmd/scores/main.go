@@ -2,10 +2,8 @@ package main
 
 import (
 	"context"
-	_ "embed"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"log"
 	"net"
 	"net/http"
@@ -16,23 +14,12 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"orbitalrun/internal/arena"
 	"orbitalrun/internal/broker"
 	"orbitalrun/internal/env"
 )
 
-//go:embed schema.sql
-var schema string
-
 var matchID = regexp.MustCompile(`^[A-Z2-7]{26}$`)
-var localMatchID = regexp.MustCompile(`^local-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
-
-type rankedResult struct {
-	arena.Result
-	Rank int64 `json:"rank"`
-}
 
 func main() {
 	if err := run(); err != nil {
@@ -45,14 +32,11 @@ func run() error {
 	defer stop()
 	startup, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	db, err := pgxpool.New(startup, env.Get("DATABASE_URL", "postgres://orbital:orbital@127.0.0.1:5432/orbital?sslmode=disable"))
+	scores, err := openStore(startup, env.Get("DATABASE_URL", "postgres://orbital:orbital@127.0.0.1:5432/orbital?sslmode=disable"))
 	if err != nil {
 		return err
 	}
-	defer db.Close()
-	if _, err := db.Exec(startup, schema, pgx.QueryExecModeSimpleProtocol); err != nil {
-		return err
-	}
+	defer scores.Close()
 
 	consumer, err := broker.OpenConsumer(startup)
 	cancel()
@@ -61,62 +45,8 @@ func run() error {
 	}
 	defer consumer.Close()
 
-	mux := http.NewServeMux()
-	mux.HandleFunc("GET /api/leaderboard", func(w http.ResponseWriter, r *http.Request) {
-		query, cancel := context.WithTimeout(r.Context(), 2*time.Second)
-		defer cancel()
-		rows, err := db.Query(query, `SELECT id, name, score, bot_score, finished_at, local
-			FROM match_results ORDER BY score DESC, finished_at ASC, id ASC LIMIT 10`)
-		if err != nil {
-			unavailable(w, err)
-			return
-		}
-		results := make([]arena.Result, 0, 10)
-		defer rows.Close()
-		for rows.Next() {
-			var result arena.Result
-			if err := rows.Scan(&result.ID, &result.Name, &result.Score, &result.BotScore, &result.FinishedAt, &result.Local); err != nil {
-				unavailable(w, err)
-				return
-			}
-			results = append(results, result)
-		}
-		if err := rows.Err(); err != nil {
-			unavailable(w, err)
-			return
-		}
-		respond(w, results)
-	})
-	mux.HandleFunc("GET /api/results/{id}", func(w http.ResponseWriter, r *http.Request) {
-		id := r.PathValue("id")
-		if !matchID.MatchString(id) && !localMatchID.MatchString(id) {
-			http.NotFound(w, r)
-			return
-		}
-		query, cancel := context.WithTimeout(r.Context(), 2*time.Second)
-		defer cancel()
-		var result rankedResult
-		err := db.QueryRow(query, `SELECT target.id, target.name, target.score, target.bot_score, target.finished_at, target.local,
-			1 + (SELECT count(*) FROM match_results AS ahead
-				WHERE ahead.score > target.score
-					OR (ahead.score = target.score AND (ahead.finished_at, ahead.id) < (target.finished_at, target.id)))
-			FROM match_results AS target WHERE target.id = $1`, id).
-			Scan(&result.ID, &result.Name, &result.Score, &result.BotScore, &result.FinishedAt, &result.Local, &result.Rank)
-		if errors.Is(err, pgx.ErrNoRows) {
-			http.NotFound(w, r)
-			return
-		}
-		if err != nil {
-			unavailable(w, err)
-			return
-		}
-		respond(w, result)
-	})
-
-	mux.HandleFunc("POST /api/local-results", localResults(db))
-
 	server := &http.Server{
-		Addr: env.Get("SCORES_LISTEN", ":8081"), Handler: mux,
+		Addr: env.Get("SCORES_LISTEN", ":8081"), Handler: routes(scores),
 		ReadHeaderTimeout: 5 * time.Second, WriteTimeout: 5 * time.Second,
 		BaseContext: func(net.Listener) context.Context { return ctx },
 	}
@@ -129,7 +59,7 @@ func run() error {
 	consumed := make(chan error, 1)
 	go func() {
 		consumed <- consumer.Run(ctx, func(ctx context.Context, payload []byte) error {
-			return save(ctx, db, payload)
+			return consumeResult(ctx, scores, payload)
 		})
 		stop()
 	}()
@@ -143,7 +73,7 @@ func run() error {
 	return err
 }
 
-func save(ctx context.Context, db *pgxpool.Pool, payload []byte) error {
+func consumeResult(ctx context.Context, scores *store, payload []byte) error {
 	var result arena.Result
 	if err := json.Unmarshal(payload, &result); err != nil || !matchID.MatchString(result.ID) ||
 		utf8.RuneCountInString(result.Name) < 1 || utf8.RuneCountInString(result.Name) > 20 ||
@@ -151,24 +81,6 @@ func save(ctx context.Context, db *pgxpool.Pool, payload []byte) error {
 		log.Print("discard invalid match result")
 		return nil
 	}
-	write, cancel := context.WithTimeout(ctx, 3*time.Second)
-	defer cancel()
-	_, err := db.Exec(write, `INSERT INTO match_results (id, name, score, bot_score, finished_at)
-		VALUES ($1, $2, $3, $4, $5) ON CONFLICT (id) DO NOTHING`,
-		result.ID, result.Name, result.Score, result.BotScore, result.FinishedAt)
-	if err != nil {
-		return fmt.Errorf("store match %s: %w", result.ID, err)
-	}
-	return nil
-}
-
-func respond(w http.ResponseWriter, data any) {
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("Cache-Control", "no-store")
-	_ = json.NewEncoder(w).Encode(data)
-}
-
-func unavailable(w http.ResponseWriter, err error) {
-	log.Printf("read scores: %v", err)
-	http.Error(w, "scores unavailable", http.StatusServiceUnavailable)
+	result.Local = false
+	return scores.Save(ctx, result)
 }
