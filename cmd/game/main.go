@@ -21,6 +21,11 @@ func main() {
 }
 
 func run(ctx context.Context) error {
+	maxMatches, err := config.PositiveInt("GAME_MAX_MATCHES", 64)
+	if err != nil {
+		return err
+	}
+
 	startup, cancel := context.WithTimeout(ctx, 8*time.Second)
 	producer, err := broker.OpenProducer(startup)
 	cancel()
@@ -44,7 +49,7 @@ func run(ctx context.Context) error {
 	defer transport.CloseIdleConnections()
 
 	frontendOrigin := os.Getenv("FRONTEND_ORIGIN")
-	match := api.NewMatchHandler(frontendOrigin, producer)
+	match := api.NewMatchHandler(frontendOrigin, producer, maxMatches)
 	server := &http.Server{
 		Addr:              config.Env("GAME_LISTEN", ":8080"),
 		Handler:           api.GameRoutes(frontendOrigin, match, proxy, producer),
@@ -52,6 +57,6 @@ func run(ctx context.Context) error {
 		IdleTimeout:       30 * time.Second,
 	}
 
-	log.Printf("game listening on %s", server.Addr)
+	log.Printf("game listening on %s (match slots: %d)", server.Addr, maxMatches)
 	return httpserver.Run(ctx, server)
 }

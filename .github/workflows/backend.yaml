@@ -126,4 +126,5 @@ jobs:
             test -s .env
             tar -xf -
             BACKEND_IMAGE='$IMAGE' docker compose -f compose.yaml -f compose.public.yaml up --detach --no-build --pull always --wait --wait-timeout 120
+            BACKEND_IMAGE='$IMAGE' docker compose -f compose.yaml -f compose.public.yaml exec -T caddy caddy reload --config - --adapter caddyfile < Caddyfile
           "

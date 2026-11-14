@@ -15,7 +15,7 @@ import (
 
 func TestWebSocketFrontendOrigin(t *testing.T) {
 	const frontend = "https://owner.github.io"
-	server := httptest.NewServer(api.GameRoutes(frontend, api.NewMatchHandler(frontend, nil), nil, nil))
+	server := httptest.NewServer(api.GameRoutes(frontend, api.NewMatchHandler(frontend, nil, 64), nil, nil))
 	defer server.Close()
 
 	for _, tc := range []struct {
@@ -45,7 +45,7 @@ func TestWebSocketFrontendOrigin(t *testing.T) {
 func TestMatchMovesPlayerAndLocalBot(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 8*time.Second)
 	defer cancel()
-	server := httptest.NewServer(api.GameRoutes("", api.NewMatchHandler("", nil), nil, nil))
+	server := httptest.NewServer(api.GameRoutes("", api.NewMatchHandler("", nil, 64), nil, nil))
 	defer server.Close()
 	conn, _, err := websocket.Dial(ctx, server.URL+"/ws", nil)
 	if err != nil {

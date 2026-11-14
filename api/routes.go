@@ -7,11 +7,12 @@ import (
 )
 
 // GameRoutes registers the public endpoints served by the game process.
-func GameRoutes(frontendOrigin string, match, scoresProxy http.Handler, broker BrokerReadiness) http.Handler {
+func GameRoutes(frontendOrigin string, match *MatchHandler, scoresProxy http.Handler, broker BrokerReadiness) http.Handler {
 	router := newRouter()
 	websocket := gin.WrapH(match)
 	router.GET("/ws", websocket)
 	router.HEAD("/ws", websocket)
+	router.GET("/metrics", gin.WrapF(match.serveMetrics))
 
 	scores := router.Group("/api")
 	proxy := gin.WrapH(allowFrontend(frontendOrigin, scoresProxy))

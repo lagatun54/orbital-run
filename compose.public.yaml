@@ -1,8 +1,14 @@
 services:
+  game:
+    ports: !reset []
+    deploy:
+      replicas: ${GAME_REPLICAS:-1}
+
   caddy:
-    image: caddy:2-alpine
+    image: caddy:2.11.9-alpine
     environment:
       DEMO_DOMAIN: ${DEMO_DOMAIN:?set DEMO_DOMAIN to the public hostname}
+      GAME_MAX_MATCHES: ${GAME_MAX_MATCHES:-64}
     ports:
       - "80:80"
       - "443:443"
