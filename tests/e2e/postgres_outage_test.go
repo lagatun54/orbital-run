@@ -81,7 +81,7 @@ func scoresProcess(t *testing.T, id string) string {
 
 func composeOutput(t *testing.T, project string, args ...string) string {
 	t.Helper()
-	return dockerOutput(t, t.Context(), append([]string{"compose", "-p", project, "-f", "../../compose.yaml"}, args...)...)
+	return dockerOutput(t, t.Context(), append([]string{"compose", "-p", project, "--project-directory", "../.."}, args...)...)
 }
 
 func dockerOutput(t *testing.T, parent context.Context, args ...string) string {

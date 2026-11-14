@@ -67,6 +67,7 @@ services:
       KAFKA_BROKERS: kafka:9092
       SCORES_URL: http://scores:8081
       FRONTEND_ORIGIN: ${FRONTEND_ORIGIN:-}
+      GAME_MAX_MATCHES: ${GAME_MAX_MATCHES:-64}
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/healthz"]
       interval: 5s

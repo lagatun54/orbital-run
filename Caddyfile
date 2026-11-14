@@ -1,3 +1,27 @@
 {$DEMO_DOMAIN} {
-	reverse_proxy game:8080
+	respond /metrics 404
+
+	reverse_proxy /ws {
+		dynamic a game 8080 {
+			refresh 5s
+		}
+		lb_policy least_conn
+		unhealthy_request_count {$GAME_MAX_MATCHES:64}
+		lb_try_duration 1s
+		lb_retry_match expression `{rp.status_code} == 503`
+		stream_close_delay 45s
+	}
+
+	reverse_proxy {
+		dynamic a game 8080 {
+			refresh 5s
+		}
+		lb_policy random
+		lb_try_duration 1s
+	}
+
+	handle_errors 503 {
+		@match path /ws
+		respond @match "all arenas are busy" 503
+	}
 }

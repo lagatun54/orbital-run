@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"sync/atomic"
 	"time"
@@ -13,29 +14,29 @@ import (
 	"orbitalrun/internal/game"
 )
 
-const maxConcurrentMatches = 64
-
-type websocketHandler struct {
+// MatchHandler admits matches and tracks capacity for one game instance.
+type MatchHandler struct {
 	frontendOrigin string
 	slots          chan struct{}
 	results        game.ResultPublisher
+	rejected       atomic.Uint64
 }
 
 // NewMatchHandler creates the WebSocket entry point for online matches.
-func NewMatchHandler(frontendOrigin string, results game.ResultPublisher) http.Handler {
-	handler := websocketHandler{
+func NewMatchHandler(frontendOrigin string, results game.ResultPublisher, maxMatches int) *MatchHandler {
+	return &MatchHandler{
 		frontendOrigin: frontendOrigin,
-		slots:          make(chan struct{}, maxConcurrentMatches),
+		slots:          make(chan struct{}, maxMatches),
 		results:        results,
 	}
-	return handler
 }
 
-func (h websocketHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+func (h *MatchHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	select {
 	case h.slots <- struct{}{}:
 		defer func() { <-h.slots }()
 	default:
+		h.rejected.Add(1)
 		http.Error(w, "all arenas are busy", http.StatusServiceUnavailable)
 		return
 	}
@@ -83,6 +84,17 @@ func (h websocketHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		_ = writeFrame(ctx, conn, end)
 		_ = conn.Close(websocket.StatusNormalClosure, "round complete")
 	}
+}
+
+func (h *MatchHandler) serveMetrics(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
+	_, _ = fmt.Fprintf(w, `# TYPE game_match_slots_used gauge
+game_match_slots_used %d
+# TYPE game_match_slots_limit gauge
+game_match_slots_limit %d
+# TYPE game_match_rejections_total counter
+game_match_rejections_total %d
+`, len(h.slots), cap(h.slots), h.rejected.Load())
 }
 
 func writeFrame(ctx context.Context, conn *websocket.Conn, frame any) error {
