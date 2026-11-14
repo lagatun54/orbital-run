@@ -70,7 +70,7 @@ func (b *kafkaBroker) Run(ctx context.Context, save func(context.Context, []byte
 }
 
 func (b *kafkaBroker) process(ctx context.Context, record *kgo.Record, save func(context.Context, []byte) error) error {
-	// Hold the partition while retrying this record so later commits cannot skip it.
+	// Bound each retry window so the consumer can allow rebalances between windows.
 	write, cancel := context.WithTimeout(ctx, 12*time.Second)
 	defer cancel()
 	for {
@@ -83,7 +83,14 @@ func (b *kafkaBroker) process(ctx context.Context, record *kgo.Record, save func
 		select {
 		case <-write.Done():
 			timer.Stop()
-			return fmt.Errorf("store Kafka record %d/%d: %w", record.Partition, record.Offset, err)
+			if ctx.Err() == nil {
+				// Reset the fetch position while rebalancing is still blocked. A later
+				// record in this partition cannot advance the commit past this one.
+				b.client.SetOffsets(map[string]map[int32]kgo.EpochOffset{
+					record.Topic: {record.Partition: {Epoch: record.LeaderEpoch, Offset: record.Offset}},
+				})
+			}
+			return nil
 		case <-timer.C:
 		}
 	}

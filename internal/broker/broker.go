@@ -4,22 +4,11 @@ import (
 	"context"
 	"os"
 
-	"orbitalrun/internal/env"
+	"orbitalrun/config"
 )
 
 const topic = "matches.finished"
 const scoresGroup = "scores"
-
-type Producer interface {
-	Publish(context.Context, string, []byte) error
-	Ready(context.Context) error
-	Close()
-}
-
-type Consumer interface {
-	Run(context.Context, func(context.Context, []byte) error) error
-	Close()
-}
 
 func OpenProducer(ctx context.Context) (Producer, error) {
 	if url := legacyNATSURL(); url != "" {
@@ -43,5 +32,5 @@ func legacyNATSURL() string {
 }
 
 func kafkaBrokers() string {
-	return env.Get("KAFKA_BROKERS", "127.0.0.1:9092")
+	return config.Env("KAFKA_BROKERS", "127.0.0.1:9092")
 }

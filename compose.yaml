@@ -1,6 +1,6 @@
 x-build: &app-build
   context: .
-  target: ${APP_TARGET:-local}
+  target: backend
   args:
     GOPROXY: "${GO_MODULE_PROXY:-https://proxy.golang.org|direct}"
 
@@ -65,7 +65,6 @@ services:
     build: *app-build
     environment:
       KAFKA_BROKERS: kafka:9092
-      BOT_ADDRESS: bot:9001
       SCORES_URL: http://scores:8081
       FRONTEND_ORIGIN: ${FRONTEND_ORIGIN:-}
     healthcheck:
@@ -78,16 +77,8 @@ services:
     depends_on:
       kafka-init:
         condition: service_completed_successfully
-      bot:
-        condition: service_started
       scores:
         condition: service_started
-    restart: unless-stopped
-
-  bot:
-    image: ${BACKEND_IMAGE:-orbital-bot:local}
-    build: *app-build
-    command: ["bot"]
     restart: unless-stopped
 
   scores:

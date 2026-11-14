@@ -2,32 +2,25 @@ package main
 
 import (
 	"context"
-	"encoding/json"
-	"errors"
 	"log"
-	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
 	"os"
-	"os/signal"
-	"syscall"
 	"time"
 
-	"orbitalrun/internal/arena"
+	"orbitalrun/api"
+	"orbitalrun/config"
 	"orbitalrun/internal/broker"
-	"orbitalrun/internal/env"
+	"orbitalrun/internal/command"
+	"orbitalrun/internal/httpserver"
 )
 
 func main() {
-	if err := run(); err != nil {
-		log.Fatal(err)
-	}
+	command.Main(run)
 }
 
-func run() error {
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
+func run(ctx context.Context) error {
 	startup, cancel := context.WithTimeout(ctx, 8*time.Second)
 	producer, err := broker.OpenProducer(startup)
 	cancel()
@@ -36,90 +29,29 @@ func run() error {
 	}
 	defer producer.Close()
 
-	bot, err := net.ResolveUDPAddr("udp", env.Get("BOT_ADDRESS", "127.0.0.1:9001"))
-	if err != nil {
-		return err
-	}
-	target, err := url.Parse(env.Get("SCORES_URL", "http://127.0.0.1:8081"))
+	target, err := url.Parse(config.Env("SCORES_URL", "http://127.0.0.1:8081"))
 	if err != nil {
 		return err
 	}
 	proxy := httputil.NewSingleHostReverseProxy(target)
+	proxy.ErrorHandler = func(w http.ResponseWriter, _ *http.Request, err error) {
+		log.Printf("scores proxy: %v", err)
+		http.Error(w, "scores unavailable", http.StatusServiceUnavailable)
+	}
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.ResponseHeaderTimeout = 3 * time.Second
 	proxy.Transport = transport
+	defer transport.CloseIdleConnections()
 
 	frontendOrigin := os.Getenv("FRONTEND_ORIGIN")
-	server := matchServer{bot: bot, slots: make(chan struct{}, 64), frontendOrigin: frontendOrigin}
-	server.publish = func(ctx context.Context, result arena.Result) error {
-		payload, err := json.Marshal(result)
-		if err != nil {
-			return err
-		}
-		return producer.Publish(ctx, result.ID, payload)
+	match := api.NewMatchHandler(frontendOrigin, producer)
+	server := &http.Server{
+		Addr:              config.Env("GAME_LISTEN", ":8080"),
+		Handler:           api.GameRoutes(frontendOrigin, match, proxy, producer),
+		ReadHeaderTimeout: 5 * time.Second,
+		IdleTimeout:       30 * time.Second,
 	}
 
-	mux := http.NewServeMux()
-	mux.HandleFunc("GET /ws", server.play)
-	api := allowFrontend(frontendOrigin, proxy)
-	mux.Handle("GET /api/leaderboard", api)
-	mux.Handle("GET /api/results/{id}", api)
-	mux.Handle("POST /api/local-results", api)
-	mux.HandleFunc("OPTIONS /api/local-results", func(w http.ResponseWriter, r *http.Request) {
-		if frontendOrigin == "" || r.Header.Get("Origin") != frontendOrigin ||
-			r.Header.Get("Access-Control-Request-Method") != http.MethodPost {
-			w.WriteHeader(http.StatusForbidden)
-			return
-		}
-		w.Header().Set("Access-Control-Allow-Origin", frontendOrigin)
-		w.Header().Set("Access-Control-Allow-Methods", http.MethodPost)
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
-		w.Header().Add("Vary", "Origin")
-		w.WriteHeader(http.StatusNoContent)
-	})
-	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
-		probe, cancel := context.WithTimeout(r.Context(), 2*time.Second)
-		defer cancel()
-		if err := producer.Ready(probe); err != nil {
-			http.Error(w, "broker disconnected", http.StatusServiceUnavailable)
-			return
-		}
-		w.WriteHeader(http.StatusNoContent)
-	})
-	if webDir := os.Getenv("WEB_DIR"); webDir != "" {
-		mux.Handle("GET /", http.FileServer(http.Dir(webDir)))
-	}
-
-	httpServer := &http.Server{
-		Addr: env.Get("GAME_LISTEN", ":8080"), Handler: mux,
-		ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 30 * time.Second,
-		BaseContext: func(net.Listener) context.Context { return ctx },
-	}
-	go func() {
-		<-ctx.Done()
-		shutdown, cancel := context.WithTimeout(context.Background(), 4*time.Second)
-		defer cancel()
-		_ = httpServer.Shutdown(shutdown)
-	}()
-
-	log.Printf("game listening on %s", httpServer.Addr)
-	err = httpServer.ListenAndServe()
-	if errors.Is(err, http.ErrServerClosed) {
-		return nil
-	}
-	return err
-}
-
-// Allow the configured frontend to read API responses.
-func allowFrontend(origin string, next http.Handler) http.Handler {
-	if origin == "" {
-		return next
-	}
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("Origin") == origin {
-			w.Header().Set("Access-Control-Allow-Origin", origin)
-		}
-		w.Header().Add("Vary", "Origin")
-		next.ServeHTTP(w, r)
-	})
+	log.Printf("game listening on %s", server.Addr)
+	return httpserver.Run(ctx, server)
 }

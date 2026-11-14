@@ -2,49 +2,73 @@
 
 Браузерная 2D-аркада на PixiJS и Go. За 30 секунд соберите больше кристаллов, чем бот. Управление стрелками, WASD или экранными кнопками. После раунда сервер отправляет результат в общий топ-10.
 
+## Разделение репозиториев
+
+Go-бэкенд и [клиент игры](https://github.com/lagatun54/orbital-run-frontend)
+собираются и публикуются из отдельных репозиториев. Клиент подключается по
+HTTP API и WebSocket на `/ws`.
+
 ## Локальный запуск
 
-Понадобится Docker с Compose v2.
+Понадобится Docker с Compose v2. Укажите origin клиентского сервера:
 
 ```sh
-docker compose up --build --wait
+FRONTEND_ORIGIN=http://localhost:5173 docker compose up -d --build --wait
+curl http://localhost:8080/api/leaderboard
 ```
 
-Откройте [игру](http://localhost:8080). Чтобы использовать другой порт, запустите Compose с переменной `GAME_PORT`.
+Для другого порта API задайте `GAME_PORT`. При ошибке Go-прокси можно указать
+`GO_MODULE_PROXY`. PostgreSQL и Kafka сохраняют данные в Docker-томах;
+`kafka-init` создаёт топик `matches.finished`.
 
-Если основной Go-прокси возвращает ошибку при сборке, можно указать доступный прокси через `GO_MODULE_PROXY`.
+Запустите клиент по инструкции в [README клиента](https://github.com/lagatun54/orbital-run-frontend#readme).
+Его адрес должен совпадать с `FRONTEND_ORIGIN` (без пути и завершающего слеша).
 
 ```sh
-docker compose logs -f game bot scores
+docker compose logs -f game scores
 docker compose down
 ```
 
-PostgreSQL и Kafka хранят данные в именованных Docker-томах между запусками.
-При первом запуске `kafka-init` создаёт топик `matches.finished`.
-
-Чтобы локально проверить раздельный запуск, сначала остановите общий стек
-командой `docker compose down`. Запустите бэкенд на порту 8080:
-
-```sh
-APP_TARGET=backend FRONTEND_ORIGIN=http://localhost:5173 docker compose up -d --build --wait
-```
-
-Затем соберите и запустите фронтенд отдельно (понадобятся Node.js 22 и Python 3):
-
-```sh
-npm ci
-BACKEND_URL=http://localhost:8080 npm run build
-python3 -m http.server 5173 --bind 127.0.0.1 --directory dist
-```
-
-Откройте `http://localhost:5173`: этот адрес должен совпадать с `FRONTEND_ORIGIN`.
-
 ## Как проходит матч
+
+### С чего начать читать код
+
+```text
+api/             HTTP-маршруты, WebSocket и обработчики рейтинга
+cmd/             точки запуска game, scores и orbital-stack
+config/          чтение переменных окружения
+db/              подключение к PostgreSQL и хранилище результатов
+  migration/     SQL-схема, которую scores применяет при запуске
+  query/         запросы записи и чтения результатов
+internal/        игровые правила, цикл матча, бот, брокер и управление процессами
+tests/           юнит-, интеграционные и сквозные тесты
+```
+
+В каждой папке `cmd/` один `main.go`. Команда читает настройки и подключает
+нужные пакеты. Управление ботом рассчитывается внутри процесса `game`.
+
+| Что ищу | Где смотреть |
+| --- | --- |
+| Публичные маршруты, включая `/ws` и API рейтинга | [api/routes.go](api/routes.go) |
+| Как бот выбирает направление к ближайшему кристаллу | [internal/bot/steering.go](internal/bot/steering.go) |
+| Как браузер подключается к матчу и передаёт нажатия | [match_handler.go](api/match_handler.go), [client_message.go](api/client_message.go) |
+| Что происходит на каждом тике и как начисляются очки | [session.go](internal/game/session.go) вызывает [`Match.Step`](internal/arena/arena.go) |
+| Как результат матча попадает в очередь и затем в PostgreSQL | [result.go](internal/game/result.go) публикует событие, [consumer.go](internal/scores/consumer.go) принимает его, [postgres.go](db/postgres.go) сохраняет |
+| Как сервер отвечает на запросы рейтинга | [api/scores_handler.go](api/scores_handler.go) и [SQL-запросы](db/query) |
+
+Файлы с интерфейсами названы по самим интерфейсам.
+
+- Игровой цикл передаёт результаты через [`ResultPublisher`](internal/game/result_publisher.go).
+- HTTP-обработчики рейтинга используют [`ResultStore`](internal/scores/result_store.go).
+  Для записи результатов из очереди достаточно [`ResultWriter`](internal/scores/result_writer.go).
+- Kafka и NATS реализуют [`Producer`](internal/broker/producer.go) и
+  [`Consumer`](internal/broker/consumer.go).
+
+### Поток данных
 
 ```mermaid
 flowchart LR
     Browser["Браузер / PixiJS"] <-->|WebSocket| Game["Go / game"]
-    Game <-->|UDP| Bot["Go / bot"]
     Game -->|"matches.finished"| Kafka["Apache Kafka"]
     Kafka --> Scores["Go / scores"]
     Scores --> PG[("PostgreSQL")]
@@ -52,8 +76,8 @@ flowchart LR
 ```
 
 - **game** ведёт серверную симуляцию с частотой 20 Гц и обрабатывает до 64 матчей одновременно. Браузер отправляет направление движения. Сервер определяет позиции, момент сбора кристаллов и итоговый счёт. По завершении матча сервер публикует результат в Kafka с ID матча в качестве ключа сообщения.
-- **bot** получает снимки арены по UDP и отвечает направлением к ближайшему кристаллу. Ответ содержит номер снимка. Сервер отбрасывает устаревшие ответы и перестаёт применять последнюю команду через 500 мс.
-- **scores** читает топик `matches.finished` в группе `scores` и фиксирует смещение после записи в PostgreSQL. При временной ошибке записи повторяет попытку. Первичный ключ результата защищает таблицу от дублей при повторной доставке.
+- На каждом тике `game` направляет бота к ближайшему кристаллу.
+- **scores** читает топик `matches.finished` в группе `scores` и фиксирует смещение после записи в PostgreSQL. При недоступности PostgreSQL повторяет обработку с того же смещения до восстановления базы. Первичный ключ результата защищает таблицу от дублей при повторной доставке.
 - **API** отдаёт топ-10 через `GET /api/leaderboard` и результат с общим местом через `GET /api/results/{id}`. Выше стоят раунды с большим счётом. При равном счёте выше более ранний раунд, а при совпадении времени порядок определяет ID результата.
 
 ## Демо очереди
@@ -81,20 +105,9 @@ curl http://localhost:8080/api/leaderboard
 
 ## Раздельный выпуск через GitHub
 
-Проверки идут в **Actions → Frontend** и **Actions → Backend**. Изменения в
-основной ветке запускают выпуск затронутого компонента. Оба workflow также можно
-запустить вручную с основной ветки через **Run workflow**.
-
-### Фронтенд: GitHub Pages
-
-1. В репозитории включите **Settings → Pages → Source → GitHub Actions**.
-2. Когда появится бэкенд, задайте переменную репозитория **Settings → Secrets and
-   variables → Actions → Variables → `BACKEND_URL`**. Значение — адрес API по
-   HTTPS без пути, например `https://api.example.com`.
-3. Запустите **Actions → Frontend**. Адрес опубликованной страницы будет в
-   результате деплоя. Фронтенд можно опубликовать раньше бэкенда, но матчи и
-   рейтинг заработают после подключения API. После изменения `BACKEND_URL`
-   запустите **Frontend** ещё раз.
+Бэкенд публикуется из этого репозитория через **Actions → Backend**.
+Настройка GitHub Pages для отдельного клиентского репозитория описана в
+[README клиента](https://github.com/lagatun54/orbital-run-frontend#readme).
 
 ### Бэкенд: GHCR и Docker Compose
 
@@ -166,7 +179,7 @@ Kafka начинает работу со своим топиком и собст
   `-js -sd /tmp/jetstream`. Порт TCP `4222` доступен внутри проекта.
   Без постоянного тома очередь может сброситься при замене контейнера.
 - `orbital-run` собирается из корневого `Dockerfile` с target `northflank`.
-  В одном контейнере запускаются `game`, `bot` и `scores`. Откройте только
+  В одном контейнере запускаются `game` и `scores`. Откройте только
   HTTP-порт `8080`, чтобы Northflank выдал адрес HTTPS.
 
 В runtime-переменных `orbital-run` задайте `NATS_URL=nats://orbital-nats:4222`
@@ -183,27 +196,45 @@ Kafka начинает работу со своим топиком и собст
 `BACKEND_URL` и запустите **Frontend**. На бесплатном тарифе первый запрос
 после простоя может занять около минуты.
 
-## Публичное демо на одном хосте
+## Публичный API на одном хосте
 
-Для живого демо понадобится Linux-хост с Docker Compose и домен, указывающий на его IP. Откройте порты 80 и 443. Caddy получит сертификат и будет проксировать HTTPS и WebSocket к игре. UDP-порт бота, Kafka и PostgreSQL доступны внутри сети Compose.
-
-Склонируйте репозиторий на хост и создайте файл `.env` с реальным доменом и случайным паролем в hex. Пароль можно сгенерировать командой `openssl rand -hex 24`.
+Для публичного API нужен Linux-хост с Docker Compose и доменом, указывающим на
+его IP. Откройте порты 80 и 443: Caddy настроит HTTPS и проксирование WebSocket.
+Создайте `.env` с доменом API, origin отдельно опубликованного клиента и паролем:
 
 ```dotenv
-DEMO_DOMAIN=game.example.com
+DEMO_DOMAIN=api.example.com
+FRONTEND_ORIGIN=https://owner.github.io
 POSTGRES_PASSWORD=replace_with_generated_hex
 ```
 
 ```sh
-docker compose -f compose.yaml -f compose.public.yaml up -d --build
+docker compose -f compose.yaml -f compose.public.yaml up -d --build --wait
 ```
 
-Откройте настроенный адрес по HTTPS. После проверки добавьте ссылку **«Играть онлайн»** в начало README на GitHub.
+Укажите `https://api.example.com` как `BACKEND_URL` при сборке клиента.
 
 ## Проверки
 
+`go test -race ./...` запускает юнит- и интеграционные тесты без Docker.
+Интеграционные тесты используют локальные TCP-сокеты.
+
+| Уровень | Что проверяет | Команда |
+| --- | --- | --- |
+| Юнит | Правила арены, имена пилотов, завершение и прерывание сессии | `go test -race ./api/... ./cmd/... ./config/... ./db/... ./internal/... ./tests/unit` |
+| Интеграция | Допуск по WebSocket Origin, движение игрока и встроенного бота | `go test -race -count=1 ./tests/integration` |
+| End-to-end | Матчи во время сбоев PostgreSQL и `scores`, появление результатов после восстановления, HTTP/CORS и повторная отправка локального результата | `bash tests/e2e/run.sh` |
+
+E2E нужен запущенный Docker с Compose v2. Скрипт собирает образ, поднимает
+отдельный стек на свободном порту с пустой базой и удаляет тестовые контейнеры
+и тома при выходе. Тест играет два 32-секундных матча через WebSocket и HTTP.
+При остановленном `scores` API рейтинга возвращает `503`, а Kafka сохраняет
+результат до запуска сервиса. CI выполняет все три набора перед публикацией
+образа.
+
+Если тестовый стек уже поднят с пустой базой, E2E можно запустить отдельно:
+
 ```sh
-go test -race ./...
-npm ci
-npm run build
+E2E_BASE_URL=http://127.0.0.1:8080 FRONTEND_ORIGIN=https://frontend.example.com \
+  go test -race -count=1 -tags=e2e -timeout=90s -v ./tests/e2e
 ```

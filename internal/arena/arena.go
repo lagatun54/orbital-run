@@ -42,17 +42,6 @@ type Result struct {
 	Local      bool      `json:"local,omitempty"`
 }
 
-type BotFrame struct {
-	Tick     uint32              `json:"tick"`
-	Bot      Point               `json:"bot"`
-	Crystals [CrystalCount]Point `json:"crystals"`
-}
-
-type BotInput struct {
-	Tick      uint32 `json:"tick"`
-	Direction Point  `json:"direction"`
-}
-
 type Match struct {
 	Frame
 	start time.Time

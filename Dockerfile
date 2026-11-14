@@ -1,10 +1,3 @@
-FROM node:22-alpine AS frontend
-WORKDIR /src
-COPY package.json package-lock.json ./
-RUN npm ci --no-audit --no-fund
-COPY web ./web
-RUN npm run build
-
 FROM --platform=$BUILDPLATFORM golang:1.26-alpine AS go-build
 ARG TARGETOS TARGETARCH
 ARG GOPROXY=https://proxy.golang.org|direct
@@ -12,7 +5,10 @@ WORKDIR /src
 RUN apk add --no-cache git
 COPY go.mod go.sum ./
 RUN go mod download
+COPY api ./api
 COPY cmd ./cmd
+COPY config ./config
+COPY db ./db
 COPY internal ./internal
 RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath -o /out/ ./cmd/...
 
@@ -23,10 +19,6 @@ USER 65532:65532
 CMD ["game"]
 
 FROM backend AS northflank
-ENV BOT_LISTEN=127.0.0.1:9001 SCORES_LISTEN=127.0.0.1:8081
+ENV SCORES_LISTEN=127.0.0.1:8081
 EXPOSE 8080
 CMD ["orbital-stack"]
-
-FROM backend AS local
-COPY --from=frontend /src/dist ./dist
-ENV WEB_DIR=/app/dist
