@@ -7,6 +7,8 @@ on:
       - 'cmd/**'
       - 'config/**'
       - 'db/**'
+      - 'deploy/render-relay/**'
+      - 'render.yaml'
       - 'internal/**'
       - 'tests/**'
       - 'go.mod'
@@ -22,6 +24,8 @@ on:
       - 'cmd/**'
       - 'config/**'
       - 'db/**'
+      - 'deploy/render-relay/**'
+      - 'render.yaml'
       - 'internal/**'
       - 'tests/**'
       - 'go.mod'
@@ -52,6 +56,11 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
+      - name: Validate Render relay
+        run: |
+          docker build --tag orbital-render-relay:ci deploy/render-relay
+          docker run --rm -e ORBITAL_API_ORIGIN=https://upstream.example.com orbital-render-relay:ci \
+            caddy validate --config /etc/caddy/Caddyfile
       - name: Unit tests
         run: go test -race ./api/... ./cmd/... ./config/... ./db/... ./internal/... ./tests/unit
       - name: Integration tests

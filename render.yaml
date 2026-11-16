@@ -3,7 +3,11 @@ services:
     name: orbital-run-api
     runtime: docker
     plan: free
-    autoDeployTrigger: 'off'
+    autoDeployTrigger: checksPass
+    buildFilter:
+      paths:
+        - deploy/render-relay/**
+        - render.yaml
     dockerContext: ./deploy/render-relay
     dockerfilePath: ./deploy/render-relay/Dockerfile
     healthCheckPath: /healthz
