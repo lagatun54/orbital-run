@@ -4,29 +4,31 @@ import (
 	"net/http"
 
 	"github.com/gin-gonic/gin"
+
+	"orbitalrun/api/scores/v1/scoresv1connect"
 )
 
 // GameRoutes registers the public endpoints served by the game process.
-func GameRoutes(frontendOrigin string, match *MatchHandler, scoresProxy http.Handler, broker BrokerReadiness) http.Handler {
+func GameRoutes(frontendOrigin string, match *MatchHandler, scoresRPC http.Handler, broker BrokerReadiness) http.Handler {
 	router := newRouter()
 	websocket := gin.WrapH(match)
 	router.GET("/ws", websocket)
 	router.HEAD("/ws", websocket)
 	router.GET("/metrics", gin.WrapF(match.serveMetrics))
 
-	scores := router.Group("/api")
-	proxy := gin.WrapH(allowFrontend(frontendOrigin, scoresProxy))
-	scores.GET("/leaderboard", proxy)
-	scores.HEAD("/leaderboard", proxy)
-	scores.GET("/results/:id", proxy)
-	scores.HEAD("/results/:id", proxy)
-	scores.POST("/local-results", proxy)
-	scores.OPTIONS("/local-results", gin.WrapF(localResultsPreflight(frontendOrigin)))
-
 	health := gin.WrapF(brokerHealth(broker))
 	router.GET("/healthz", health)
 	router.HEAD("/healthz", health)
-	return router
+	if scoresRPC == nil {
+		return router
+	}
+	// Mount the RPCs outside Gin so HTTP/2 trailers are written by net/http.
+	mux := http.NewServeMux()
+	rpc := allowRPCFrontend(frontendOrigin, scoresRPC)
+	mux.Handle("/"+scoresv1connect.LeaderboardServiceName+"/", rpc)
+	mux.Handle("/"+scoresv1connect.ResultsServiceName+"/", rpc)
+	mux.Handle("/", router)
+	return mux
 }
 
 func newRouter() *gin.Engine {

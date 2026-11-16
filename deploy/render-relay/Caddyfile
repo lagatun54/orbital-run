@@ -7,17 +7,17 @@
 :{$PORT:10000} {
 	@read {
 		method GET
-		path /healthz /api/leaderboard /api/results/* /ws
+		path /healthz /ws
 	}
-	@write {
+	@rpc {
 		method POST OPTIONS
-		path /api/local-results
+		path /orbital.scores.v1.LeaderboardService/* /orbital.scores.v1.ResultsService/*
 	}
 
 	handle @read {
 		import northflank_upstream
 	}
-	handle @write {
+	handle @rpc {
 		import northflank_upstream
 	}
 	handle {

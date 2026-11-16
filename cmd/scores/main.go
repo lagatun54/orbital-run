@@ -37,11 +37,15 @@ func run(ctx context.Context) error {
 	}
 	defer consumer.Close()
 
+	protocols := new(http.Protocols)
+	protocols.SetHTTP1(true)
+	protocols.SetUnencryptedHTTP2(true)
 	server := &http.Server{
 		Addr:              config.Env("SCORES_LISTEN", ":8081"),
 		Handler:           api.NewScoresHandler(store),
 		ReadHeaderTimeout: 5 * time.Second,
 		WriteTimeout:      5 * time.Second,
+		Protocols:         protocols,
 	}
 	ctx, stop := context.WithCancel(ctx)
 	defer stop()

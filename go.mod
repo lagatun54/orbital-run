@@ -3,11 +3,13 @@ module orbitalrun
 go 1.26.3
 
 require (
+	connectrpc.com/connect v1.19.1
 	github.com/coder/websocket v1.8.14
 	github.com/gin-gonic/gin v1.12.0
 	github.com/jackc/pgx/v5 v5.13.0
 	github.com/nats-io/nats.go v1.55.0
 	github.com/twmb/franz-go v1.21.0
+	google.golang.org/protobuf v1.36.10
 )
 
 require (
@@ -48,5 +50,4 @@ require (
 	golang.org/x/sync v0.23.0 // indirect
 	golang.org/x/sys v0.48.0 // indirect
 	golang.org/x/text v0.42.0 // indirect
-	google.golang.org/protobuf v1.36.10 // indirect
 )

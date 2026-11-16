@@ -5,7 +5,6 @@ package e2e
 import (
 	"context"
 	"crypto/rand"
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
@@ -13,8 +12,12 @@ import (
 	"testing"
 	"time"
 
+	"connectrpc.com/connect"
 	"github.com/coder/websocket"
 	"github.com/coder/websocket/wsjson"
+
+	scoresv1 "orbitalrun/api/scores/v1"
+	"orbitalrun/api/scores/v1/scoresv1connect"
 	"orbitalrun/internal/arena"
 	"orbitalrun/internal/game"
 )
@@ -22,11 +25,6 @@ import (
 type backend struct {
 	url, origin string
 	client      *http.Client
-}
-
-type rankedResult struct {
-	arena.Result
-	Rank int64 `json:"rank"`
 }
 
 func TestBackend(t *testing.T) {
@@ -39,37 +37,40 @@ func TestBackend(t *testing.T) {
 		t.Fatal("set E2E_BASE_URL and FRONTEND_ORIGIN, or run bash tests/e2e/run.sh")
 	}
 
-	t.Run("HTTP contract", func(t *testing.T) {
-		res := api.request(t, t.Context(), http.MethodGet, "/healthz", "", http.StatusNoContent, nil)
-		res.Body.Close()
-		res = api.request(t, t.Context(), http.MethodGet, "/", "", http.StatusNotFound, nil)
-		res.Body.Close()
-		res = api.request(t, t.Context(), http.MethodHead, "/api/leaderboard", "", http.StatusOK, nil)
-		res.Body.Close()
-		assertCORS(t, res, api.origin)
-		res = api.request(t, t.Context(), http.MethodDelete, "/api/leaderboard", "", http.StatusMethodNotAllowed, nil)
-		res.Body.Close()
-		if res.Header.Get("Allow") != "GET, HEAD" {
-			t.Fatalf("unexpected allowed methods: %q", res.Header.Get("Allow"))
+	t.Run("gRPC-Web contract", func(t *testing.T) {
+		api.request(t, t.Context(), http.MethodGet, "/healthz", http.StatusNoContent, nil).Body.Close()
+		api.request(t, t.Context(), http.MethodGet, "/", http.StatusNotFound, nil).Body.Close()
+		api.request(t, t.Context(), http.MethodGet, "/api/leaderboard", http.StatusNotFound, nil).Body.Close()
+
+		leaderboard, err := api.getLeaderboard(t.Context())
+		assertRPCCode(t, err, 0)
+		if got := leaderboard.Header().Get("Access-Control-Allow-Origin"); got != api.origin {
+			t.Fatalf("Access-Control-Allow-Origin = %q, want %q", got, api.origin)
 		}
 
-		var leaderboard []arena.Result
-		res = api.request(t, t.Context(), http.MethodGet, "/api/leaderboard", "", http.StatusOK, nil)
-		defer res.Body.Close()
-		if err := json.NewDecoder(res.Body).Decode(&leaderboard); err != nil || leaderboard == nil {
-			t.Fatalf("expected a JSON leaderboard array, got %v (%v)", leaderboard, err)
-		}
-		assertCORS(t, res, api.origin)
-
-		res = api.request(t, t.Context(), http.MethodOptions, "/api/local-results", "", http.StatusNoContent, http.Header{
-			"Access-Control-Request-Method":  {http.MethodPost},
-			"Access-Control-Request-Headers": {"content-type"},
-		})
-		defer res.Body.Close()
-		assertCORS(t, res, api.origin)
-		if res.Header.Get("Access-Control-Allow-Methods") != http.MethodPost ||
-			!strings.EqualFold(res.Header.Get("Access-Control-Allow-Headers"), "content-type") {
-			t.Fatalf("preflight did not allow a JSON POST: %v", res.Header)
+		for _, procedure := range []string{
+			scoresv1connect.LeaderboardServiceGetLeaderboardProcedure,
+			scoresv1connect.ResultsServiceGetResultProcedure,
+			scoresv1connect.ResultsServiceSaveLocalResultProcedure,
+		} {
+			res := api.request(t, t.Context(), http.MethodOptions, procedure, http.StatusNoContent, http.Header{
+				"Access-Control-Request-Method":  {http.MethodPost},
+				"Access-Control-Request-Headers": {"content-type,grpc-timeout,x-grpc-web,x-user-agent"},
+			})
+			res.Body.Close()
+			if res.Header.Get("Access-Control-Allow-Origin") != api.origin ||
+				res.Header.Get("Access-Control-Allow-Methods") != http.MethodPost {
+				t.Fatalf("%s preflight did not allow a gRPC-Web POST: %v", procedure, res.Header)
+			}
+			allowed := strings.ToLower(res.Header.Get("Access-Control-Allow-Headers"))
+			for _, header := range []string{"content-type", "grpc-timeout", "x-grpc-web", "x-user-agent"} {
+				if !strings.Contains(allowed, header) {
+					t.Errorf("%s preflight did not allow %s", procedure, header)
+				}
+			}
+			api.request(t, t.Context(), http.MethodOptions, procedure, http.StatusForbidden, http.Header{
+				"Origin": {"https://untrusted.example"}, "Access-Control-Request-Method": {http.MethodPost},
+			}).Body.Close()
 		}
 	})
 
@@ -88,19 +89,16 @@ func TestBackend(t *testing.T) {
 		ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
 		defer cancel()
 		ranked := api.waitForResult(t, ctx, end.Result.ID)
-		if ranked.Rank < 1 || !sameResult(ranked.Result, end.Result) {
+		if ranked.GetRank() < 1 || !sameResult(ranked.GetResult(), end.Result) {
 			t.Fatalf("stored result = %+v; want %+v with a positive rank", ranked, end.Result)
 		}
 
-		res := api.request(t, ctx, http.MethodGet, "/api/leaderboard", "", http.StatusOK, nil)
-		defer res.Body.Close()
-		var leaderboard []arena.Result
-		if err := json.NewDecoder(res.Body).Decode(&leaderboard); err != nil {
-			t.Fatal(err)
-		}
+		response, err := api.getLeaderboard(ctx)
+		assertRPCCode(t, err, 0)
+		leaderboard := response.Msg.GetEntries()
 		// The Compose runner starts with an empty database.
-		if len(leaderboard) != 1 || !sameResult(leaderboard[0], end.Result) || ranked.Rank != 1 {
-			t.Fatalf("first match should rank first: leaderboard = %+v, rank = %d", leaderboard, ranked.Rank)
+		if len(leaderboard) != 1 || !sameResult(leaderboard[0], end.Result) || ranked.GetRank() != 1 {
+			t.Fatalf("first match should rank first: leaderboard = %+v, rank = %d", leaderboard, ranked.GetRank())
 		}
 	})
 
@@ -110,27 +108,25 @@ func TestBackend(t *testing.T) {
 		uuid[6] = uuid[6]&0x0f | 0x40 // UUID v4
 		uuid[8] = uuid[8]&0x3f | 0x80 // RFC 9562 variant
 		id := fmt.Sprintf("local-%x-%x-%x-%x-%x", uuid[:4], uuid[4:6], uuid[6:8], uuid[8:10], uuid[10:])
-		post := func(name string, score int, wantStatus int) {
+		post := func(name string, score int32, wantCode connect.Code) {
 			t.Helper()
-			body := fmt.Sprintf(`{"id":%q,"name":%q,"score":%d,"botScore":1}`, id, name, score)
-			res := api.request(t, t.Context(), http.MethodPost, "/api/local-results", body, wantStatus, nil)
-			res.Body.Close()
+			botScore := int32(1)
+			assertRPCCode(t, api.saveLocalResult(t.Context(), &scoresv1.SaveLocalResultRequest{
+				Id: id, Name: name, Score: &score, BotScore: &botScore,
+			}), wantCode)
 		}
-		post("Offline", 301, http.StatusBadRequest)
-		get := api.request(t, t.Context(), http.MethodGet, "/api/results/"+id, "", http.StatusNotFound, nil)
-		get.Body.Close()
-		post("Offline!", 12, http.StatusNoContent)
-		post("Duplicate", 99, http.StatusNoContent)
+		post("Offline", 301, connect.CodeInvalidArgument)
+		_, err := api.getResult(t.Context(), id)
+		assertRPCCode(t, err, connect.CodeNotFound)
+		post("Offline!", 12, 0)
+		post("Duplicate", 99, 0)
 
-		var result rankedResult
-		res := api.request(t, t.Context(), http.MethodGet, "/api/results/"+id, "", http.StatusOK, nil)
-		defer res.Body.Close()
-		if err := json.NewDecoder(res.Body).Decode(&result); err != nil {
-			t.Fatal(err)
-		}
-		if result.ID != id || result.Name != "Offline" || result.Score != 12 || result.BotScore != 1 ||
-			!result.Local || result.FinishedAt.IsZero() || result.Rank < 1 {
-			t.Fatalf("stored local result changed or is incomplete: %+v", result)
+		ranked, err := api.getResult(t.Context(), id)
+		assertRPCCode(t, err, 0)
+		result := ranked.Msg.GetResult()
+		if result.GetId() != id || result.GetName() != "Offline" || result.GetScore() != 12 ||
+			result.GetBotScore() != 1 || !result.GetLocal() || result.GetFinishedAt() == nil || ranked.Msg.GetRank() < 1 {
+			t.Fatalf("stored local result changed or is incomplete: %v", ranked.Msg)
 		}
 	})
 
@@ -142,31 +138,29 @@ func TestBackend(t *testing.T) {
 		)
 		for _, entry := range []struct {
 			id    string
-			score int
+			score int32
 		}{{earlier, 100}, {later, 100}, {higher, 101}} {
-			body := fmt.Sprintf(`{"id":%q,"name":"Pilot","score":%d,"botScore":0}`, entry.id, entry.score)
-			res := api.request(t, t.Context(), http.MethodPost, "/api/local-results", body, http.StatusNoContent, nil)
-			res.Body.Close()
+			botScore := int32(0)
+			assertRPCCode(t, api.saveLocalResult(t.Context(), &scoresv1.SaveLocalResultRequest{
+				Id: entry.id, Name: "Pilot", Score: &entry.score, BotScore: &botScore,
+			}), 0)
 		}
 
-		var leaderboard []arena.Result
-		res := api.request(t, t.Context(), http.MethodGet, "/api/leaderboard", "", http.StatusOK, nil)
-		defer res.Body.Close()
-		if err := json.NewDecoder(res.Body).Decode(&leaderboard); err != nil {
-			t.Fatal(err)
-		}
+		response, err := api.getLeaderboard(t.Context())
+		assertRPCCode(t, err, 0)
+		leaderboard := response.Msg.GetEntries()
 		wantOrder := []string{higher, earlier, later}
 		for i, entry := range leaderboard {
-			switch entry.ID {
+			switch entry.GetId() {
 			case higher, earlier, later:
-				if len(wantOrder) == 0 || entry.ID != wantOrder[0] {
-					t.Fatalf("unexpected result %s in leaderboard; remaining order %v", entry.ID, wantOrder)
+				if len(wantOrder) == 0 || entry.GetId() != wantOrder[0] {
+					t.Fatalf("unexpected result %s in leaderboard; remaining order %v", entry.GetId(), wantOrder)
 				}
 				wantOrder = wantOrder[1:]
 			}
-			result := api.waitForResult(t, t.Context(), entry.ID)
-			if result.Rank != int64(i+1) {
-				t.Errorf("rank of %s = %d, want %d", entry.ID, result.Rank, i+1)
+			result := api.waitForResult(t, t.Context(), entry.GetId())
+			if result.GetRank() != int64(i+1) {
+				t.Errorf("rank of %s = %d, want %d", entry.GetId(), result.GetRank(), i+1)
 			}
 		}
 		if len(wantOrder) != 0 {
@@ -181,11 +175,9 @@ func TestBackend(t *testing.T) {
 		}
 		composeOutput(t, project, "stop", "scores")
 
-		res := api.request(t, t.Context(), http.MethodGet, "/api/leaderboard", "", http.StatusServiceUnavailable, nil)
-		res.Body.Close()
-		assertCORS(t, res, api.origin)
-		res = api.request(t, t.Context(), http.MethodGet, "/healthz", "", http.StatusNoContent, nil)
-		res.Body.Close()
+		_, err := api.getLeaderboard(t.Context())
+		assertRPCCode(t, err, connect.CodeUnavailable)
+		api.request(t, t.Context(), http.MethodGet, "/healthz", http.StatusNoContent, nil).Body.Close()
 
 		t.Log("playing a full round with scores stopped")
 		end := api.playMatch(t)
@@ -194,7 +186,7 @@ func TestBackend(t *testing.T) {
 		ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
 		defer cancel()
 		ranked := api.waitForResult(t, ctx, end.Result.ID)
-		if ranked.Rank < 1 || !sameResult(ranked.Result, end.Result) {
+		if ranked.GetRank() < 1 || !sameResult(ranked.GetResult(), end.Result) {
 			t.Fatalf("stored result = %+v; want %+v with a positive rank", ranked, end.Result)
 		}
 	})
@@ -257,26 +249,46 @@ func (api backend) playMatch(t *testing.T) game.RoundEnd {
 	}
 }
 
-func (api backend) waitForResult(t *testing.T, ctx context.Context, id string) rankedResult {
+func (api backend) getLeaderboard(ctx context.Context) (*connect.Response[scoresv1.GetLeaderboardResponse], error) {
+	client := scoresv1connect.NewLeaderboardServiceClient(api.client, api.url, connect.WithGRPCWeb())
+	req := connect.NewRequest(&scoresv1.GetLeaderboardRequest{})
+	req.Header().Set("Origin", api.origin)
+	return client.GetLeaderboard(ctx, req)
+}
+
+func (api backend) getResult(ctx context.Context, id string) (*connect.Response[scoresv1.GetResultResponse], error) {
+	client := scoresv1connect.NewResultsServiceClient(api.client, api.url, connect.WithGRPCWeb())
+	req := connect.NewRequest(&scoresv1.GetResultRequest{Id: id})
+	req.Header().Set("Origin", api.origin)
+	return client.GetResult(ctx, req)
+}
+
+func (api backend) saveLocalResult(ctx context.Context, result *scoresv1.SaveLocalResultRequest) error {
+	client := scoresv1connect.NewResultsServiceClient(api.client, api.url, connect.WithGRPCWeb())
+	req := connect.NewRequest(result)
+	req.Header().Set("Origin", api.origin)
+	_, err := client.SaveLocalResult(ctx, req)
+	return err
+}
+
+func assertRPCCode(t *testing.T, err error, want connect.Code) {
+	t.Helper()
+	if (want == 0 && err != nil) || (want != 0 && connect.CodeOf(err) != want) {
+		t.Fatalf("RPC returned %v, want %v", err, want)
+	}
+}
+
+func (api backend) waitForResult(t *testing.T, ctx context.Context, id string) *scoresv1.GetResultResponse {
 	t.Helper()
 	ticker := time.NewTicker(250 * time.Millisecond)
 	defer ticker.Stop()
 	for {
-		res := api.send(t, ctx, http.MethodGet, "/api/results/"+id, "", nil)
-		var result rankedResult
-		switch res.StatusCode {
-		case http.StatusOK:
-			err := json.NewDecoder(res.Body).Decode(&result)
-			res.Body.Close()
-			if err != nil {
-				t.Fatal(err)
-			}
-			return result
-		case http.StatusNotFound:
-			res.Body.Close()
-		default:
-			res.Body.Close()
-			t.Fatalf("GET /api/results/%s: unexpected status %v", id, res.Status)
+		res, err := api.getResult(ctx, id)
+		if err == nil {
+			return res.Msg
+		}
+		if connect.CodeOf(err) != connect.CodeNotFound {
+			t.Fatalf("GetResult(%s): %v", id, err)
 		}
 		select {
 		case <-ctx.Done():
@@ -286,9 +298,9 @@ func (api backend) waitForResult(t *testing.T, ctx context.Context, id string) r
 	}
 }
 
-func (api backend) request(t *testing.T, ctx context.Context, method, path, body string, status int, headers http.Header) *http.Response {
+func (api backend) request(t *testing.T, ctx context.Context, method, path string, status int, headers http.Header) *http.Response {
 	t.Helper()
-	res := api.send(t, ctx, method, path, body, headers)
+	res := api.send(t, ctx, method, path, headers)
 	if res.StatusCode != status {
 		res.Body.Close()
 		t.Fatalf("%s %s: got status %s, want %d", method, path, res.Status, status)
@@ -296,18 +308,15 @@ func (api backend) request(t *testing.T, ctx context.Context, method, path, body
 	return res
 }
 
-func (api backend) send(t *testing.T, ctx context.Context, method, path, body string, headers http.Header) *http.Response {
+func (api backend) send(t *testing.T, ctx context.Context, method, path string, headers http.Header) *http.Response {
 	t.Helper()
-	req, err := http.NewRequestWithContext(ctx, method, api.url+path, strings.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, method, api.url+path, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
+	req.Header.Set("Origin", api.origin)
 	for name, values := range headers {
 		req.Header[name] = values
-	}
-	req.Header.Set("Origin", api.origin)
-	if body != "" {
-		req.Header.Set("Content-Type", "application/json")
 	}
 	res, err := api.client.Do(req)
 	if err != nil {
@@ -316,15 +325,10 @@ func (api backend) send(t *testing.T, ctx context.Context, method, path, body st
 	return res
 }
 
-func assertCORS(t *testing.T, res *http.Response, origin string) {
-	t.Helper()
-	if got := res.Header.Get("Access-Control-Allow-Origin"); got != origin {
-		t.Fatalf("Access-Control-Allow-Origin = %q, want %q", got, origin)
-	}
-}
-
-func sameResult(got, want arena.Result) bool {
+func sameResult(got *scoresv1.MatchResult, want arena.Result) bool {
 	// PostgreSQL stores timestamps with microsecond precision.
-	return got.ID == want.ID && got.Name == want.Name && got.Score == want.Score &&
-		got.BotScore == want.BotScore && got.Local == want.Local && got.FinishedAt.Sub(want.FinishedAt).Abs() < time.Microsecond
+	return got.GetId() == want.ID && got.GetName() == want.Name &&
+		int(got.GetScore()) == want.Score && int(got.GetBotScore()) == want.BotScore &&
+		got.GetLocal() == want.Local && got.GetFinishedAt() != nil &&
+		got.GetFinishedAt().AsTime().Sub(want.FinishedAt).Abs() < time.Microsecond
 }

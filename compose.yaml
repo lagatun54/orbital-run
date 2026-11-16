@@ -95,7 +95,7 @@ services:
       kafka-init:
         condition: service_completed_successfully
     healthcheck:
-      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8081/api/leaderboard"]
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8081/healthz"]
       interval: 5s
       timeout: 3s
       retries: 12
