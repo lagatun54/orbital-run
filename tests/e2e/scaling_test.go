@@ -60,8 +60,9 @@ func TestGameScaling(t *testing.T) {
 	requireGameFrame(t, ctx, second)
 
 	api := backend{url: baseURL, client: &http.Client{Timeout: 3 * time.Second}}
-	api.request(t, ctx, http.MethodGet, "/api/leaderboard", "", http.StatusOK, nil).Body.Close()
-	api.request(t, ctx, http.MethodGet, "/metrics", "", http.StatusNotFound, nil).Body.Close()
+	_, err := api.getLeaderboard(ctx)
+	assertRPCCode(t, err, 0)
+	api.request(t, ctx, http.MethodGet, "/metrics", http.StatusNotFound, nil).Body.Close()
 	if err := first.Close(websocket.StatusNormalClosure, "leaving match"); err != nil {
 		t.Fatal(err)
 	}

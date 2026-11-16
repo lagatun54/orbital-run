@@ -4,8 +4,6 @@ import (
 	"context"
 	"log"
 	"net/http"
-	"net/http/httputil"
-	"net/url"
 	"os"
 	"time"
 
@@ -34,27 +32,26 @@ func run(ctx context.Context) error {
 	}
 	defer producer.Close()
 
-	target, err := url.Parse(config.Env("SCORES_URL", "http://127.0.0.1:8081"))
-	if err != nil {
-		return err
-	}
-	proxy := httputil.NewSingleHostReverseProxy(target)
-	proxy.ErrorHandler = func(w http.ResponseWriter, _ *http.Request, err error) {
-		log.Printf("scores proxy: %v", err)
-		http.Error(w, "scores unavailable", http.StatusServiceUnavailable)
-	}
 	transport := http.DefaultTransport.(*http.Transport).Clone()
-	transport.ResponseHeaderTimeout = 3 * time.Second
-	proxy.Transport = transport
+	transport.Protocols = new(http.Protocols)
+	transport.Protocols.SetHTTP2(true)
+	transport.Protocols.SetUnencryptedHTTP2(true)
 	defer transport.CloseIdleConnections()
+	scoresClient := &http.Client{Transport: transport, Timeout: 4 * time.Second}
+	scoresRPC := api.NewScoresGateway(scoresClient, config.Env("SCORES_URL", "http://127.0.0.1:8081"))
+
+	protocols := new(http.Protocols)
+	protocols.SetHTTP1(true)
+	protocols.SetUnencryptedHTTP2(true)
 
 	frontendOrigin := os.Getenv("FRONTEND_ORIGIN")
 	match := api.NewMatchHandler(frontendOrigin, producer, maxMatches)
 	server := &http.Server{
 		Addr:              config.Env("GAME_LISTEN", ":8080"),
-		Handler:           api.GameRoutes(frontendOrigin, match, proxy, producer),
+		Handler:           api.GameRoutes(frontendOrigin, match, scoresRPC, producer),
 		ReadHeaderTimeout: 5 * time.Second,
 		IdleTimeout:       30 * time.Second,
+		Protocols:         protocols,
 	}
 
 	log.Printf("game listening on %s (match slots: %d)", server.Addr, maxMatches)

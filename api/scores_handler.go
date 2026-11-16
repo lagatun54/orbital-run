@@ -1,113 +1,110 @@
 package api
 
 import (
-	"encoding/json"
+	"context"
 	"errors"
-	"io"
 	"log"
-	"mime"
 	"net/http"
 	"regexp"
 
-	"github.com/gin-gonic/gin"
+	"connectrpc.com/connect"
+	"google.golang.org/protobuf/types/known/timestamppb"
 
+	scoresv1 "orbitalrun/api/scores/v1"
 	"orbitalrun/internal/arena"
 	"orbitalrun/internal/scores"
 )
 
 var localMatchID = regexp.MustCompile(`^local-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
 
-type httpHandler struct {
+type scoresHandler struct {
 	store scores.ResultStore
 }
 
-// NewScoresHandler registers the leaderboard, result lookup, and local result endpoints.
+// NewScoresHandler serves the internal RPCs and a readiness probe.
 func NewScoresHandler(store scores.ResultStore) http.Handler {
-	handler := httpHandler{store: store}
-	router := newRouter()
-	routes := router.Group("/api")
-	routes.GET("/leaderboard", handler.leaderboard)
-	routes.HEAD("/leaderboard", handler.leaderboard)
-	routes.GET("/results/:id", handler.result)
-	routes.HEAD("/results/:id", handler.result)
-	routes.POST("/local-results", handler.saveLocalResult)
+	service := scoresHandler{store: store}
+	router := scoresRPCs(service, service)
+	router.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
+		if _, err := store.Top(r.Context()); err != nil {
+			http.Error(w, "scores unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
 	return router
 }
 
-func (h httpHandler) leaderboard(c *gin.Context) {
-	results, err := h.store.Top(c.Request.Context())
+func (h scoresHandler) GetLeaderboard(ctx context.Context, _ *connect.Request[scoresv1.GetLeaderboardRequest]) (*connect.Response[scoresv1.GetLeaderboardResponse], error) {
+	results, err := h.store.Top(ctx)
 	if err != nil {
-		unavailable(c.Writer, err)
-		return
+		return nil, scoresUnavailable(err)
 	}
-	respond(c.Writer, results)
+	entries := make([]*scoresv1.MatchResult, 0, len(results))
+	for _, result := range results {
+		entries = append(entries, matchResultMessage(result))
+	}
+	return connect.NewResponse(&scoresv1.GetLeaderboardResponse{Entries: entries}), nil
 }
 
-func (h httpHandler) result(c *gin.Context) {
-	w, r := c.Writer, c.Request
-	id := c.Param("id")
+func (h scoresHandler) GetResult(ctx context.Context, req *connect.Request[scoresv1.GetResultRequest]) (*connect.Response[scoresv1.GetResultResponse], error) {
+	id := req.Msg.GetId()
 	if !scores.ValidOnlineResultID(id) && !localMatchID.MatchString(id) {
-		http.NotFound(w, r)
-		return
+		return nil, resultNotFound()
 	}
-	result, err := h.store.FindRanked(r.Context(), id)
+	result, err := h.store.FindRanked(ctx, id)
 	if errors.Is(err, scores.ErrResultNotFound) {
-		http.NotFound(w, r)
-		return
+		return nil, resultNotFound()
 	}
 	if err != nil {
-		unavailable(w, err)
-		return
+		return nil, scoresUnavailable(err)
 	}
-	respond(w, result)
+	return connect.NewResponse(&scoresv1.GetResultResponse{
+		Result: matchResultMessage(result.Result),
+		Rank:   result.Rank,
+	}), nil
 }
 
-func (h httpHandler) saveLocalResult(c *gin.Context) {
-	w, r := c.Writer, c.Request
-	contentType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
-	if err != nil || contentType != "application/json" {
-		http.Error(w, "expected a JSON result", http.StatusUnsupportedMediaType)
-		return
-	}
-	var input struct {
-		ID       string `json:"id"`
-		Name     string `json:"name"`
-		Score    *int   `json:"score"`
-		BotScore *int   `json:"botScore"`
-	}
-	body := json.NewDecoder(http.MaxBytesReader(w, r.Body, 2048))
-	if err := body.Decode(&input); err != nil || body.Decode(new(any)) != io.EOF ||
-		!localMatchID.MatchString(input.ID) || !validLocalScore(input.Score) || !validLocalScore(input.BotScore) {
-		http.Error(w, "invalid local result", http.StatusBadRequest)
-		return
+func (h scoresHandler) SaveLocalResult(ctx context.Context, req *connect.Request[scoresv1.SaveLocalResultRequest]) (*connect.Response[scoresv1.SaveLocalResultResponse], error) {
+	input := req.Msg
+	if !localMatchID.MatchString(input.GetId()) || !validLocalScore(input.Score) || !validLocalScore(input.BotScore) {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("invalid local result"))
 	}
 
-	// A local result is reported by the client. Keep its origin visible in the leaderboard.
+	// The client reports this result, so mark it as local on the leaderboard.
 	result := arena.Result{
-		ID:       input.ID,
-		Name:     arena.PilotName(input.Name),
-		Score:    *input.Score,
-		BotScore: *input.BotScore,
+		ID:       input.GetId(),
+		Name:     arena.PilotName(input.GetName()),
+		Score:    int(input.GetScore()),
+		BotScore: int(input.GetBotScore()),
 		Local:    true,
 	}
-	if err := h.store.Save(r.Context(), result); err != nil {
-		unavailable(w, err)
-		return
+	if err := h.store.Save(ctx, result); err != nil {
+		return nil, scoresUnavailable(err)
 	}
-	w.WriteHeader(http.StatusNoContent)
+	return connect.NewResponse(&scoresv1.SaveLocalResultResponse{}), nil
 }
 
-func validLocalScore(score *int) bool {
+func validLocalScore(score *int32) bool {
 	return score != nil && *score >= 0 && *score <= 300
 }
 
-func respond(w http.ResponseWriter, data any) {
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("Cache-Control", "no-store")
-	_ = json.NewEncoder(w).Encode(data)
+func matchResultMessage(result arena.Result) *scoresv1.MatchResult {
+	return &scoresv1.MatchResult{
+		Id:         result.ID,
+		Name:       result.Name,
+		Score:      int32(result.Score),
+		BotScore:   int32(result.BotScore),
+		FinishedAt: timestamppb.New(result.FinishedAt),
+		Local:      result.Local,
+	}
 }
 
-func unavailable(w http.ResponseWriter, err error) {
+func resultNotFound() error {
+	return connect.NewError(connect.CodeNotFound, scores.ErrResultNotFound)
+}
+
+func scoresUnavailable(err error) error {
 	log.Printf("scores: %v", err)
-	http.Error(w, "scores unavailable", http.StatusServiceUnavailable)
+	return connect.NewError(connect.CodeUnavailable, errors.New("scores unavailable"))
 }

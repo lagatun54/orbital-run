@@ -6,7 +6,9 @@
 
 Go-бэкенд и [клиент игры](https://github.com/lagatun54/orbital-run-frontend)
 собираются и публикуются из отдельных репозиториев. Клиент подключается по
-HTTP API и WebSocket на `/ws`.
+gRPC-Web для рейтинга и результатов и по WebSocket на `/ws` для матча.
+При переходе с REST обновите бэкенд и браузерный клиент в рамках одного выпуска.
+См. [инструкцию по миграции клиента](docs/frontend-grpc-migration.md).
 
 ## Локальный запуск
 
@@ -14,12 +16,14 @@ HTTP API и WebSocket на `/ws`.
 
 ```sh
 FRONTEND_ORIGIN=http://localhost:5173 docker compose up -d --build --wait
-curl http://localhost:8080/api/leaderboard
+grpcurl -plaintext -import-path api -proto scores/v1/leaderboard_service.proto \
+  -d '{}' localhost:8080 orbital.scores.v1.LeaderboardService/GetLeaderboard
 ```
 
-Для другого порта API задайте `GAME_PORT`. При ошибке Go-прокси можно указать
-`GO_MODULE_PROXY`. PostgreSQL и Kafka сохраняют данные в Docker-томах;
-`kafka-init` создаёт топик `matches.finished`.
+Для ручной проверки установите `grpcurl`. Для другого порта API задайте
+`GAME_PORT`. При ошибке Go-прокси можно указать `GO_MODULE_PROXY`.
+PostgreSQL и Kafka сохраняют данные в Docker-томах, а `kafka-init` создаёт
+топик `matches.finished`.
 
 Запустите клиент по инструкции в [README клиента](https://github.com/lagatun54/orbital-run-frontend#readme).
 Его адрес должен совпадать с `FRONTEND_ORIGIN` (без пути и завершающего слеша).
@@ -34,7 +38,7 @@ docker compose down
 ### С чего начать читать код
 
 ```text
-api/             HTTP-маршруты, WebSocket и обработчики рейтинга
+api/             WebSocket, Protobuf-контракты и обработчики RPC
 cmd/             точки запуска game, scores и orbital-stack
 config/          чтение переменных окружения
 db/              подключение к PostgreSQL и хранилище результатов
@@ -59,7 +63,7 @@ tests/           юнит-, интеграционные и сквозные т�
 Файлы с интерфейсами названы по самим интерфейсам.
 
 - Игровой цикл передаёт результаты через [`ResultPublisher`](internal/game/result_publisher.go).
-- HTTP-обработчики рейтинга используют [`ResultStore`](internal/scores/result_store.go).
+- RPC-обработчики рейтинга и результатов используют [`ResultStore`](internal/scores/result_store.go).
   Для записи результатов из очереди достаточно [`ResultWriter`](internal/scores/result_writer.go).
 - Kafka и NATS реализуют [`Producer`](internal/broker/producer.go) и
   [`Consumer`](internal/broker/consumer.go).
@@ -72,13 +76,29 @@ flowchart LR
     Game -->|"matches.finished"| Kafka["Apache Kafka"]
     Kafka --> Scores["Go / scores"]
     Scores --> PG[("PostgreSQL")]
-    Browser -->|"HTTP API через game"| Scores
+    Browser -->|gRPC-Web| Game
+    Game -->|gRPC| Scores
 ```
 
 - **game** ведёт серверную симуляцию с частотой 20 Гц. Переменная `GAME_MAX_MATCHES` задаёт число слотов на экземпляр `game` (по умолчанию 64). Браузер отправляет направление движения. Сервер определяет позиции, момент сбора кристаллов и итоговый счёт. По завершении матча сервер публикует результат в Kafka с ID матча в качестве ключа сообщения.
 - На каждом тике `game` направляет бота к ближайшему кристаллу.
 - **scores** читает топик `matches.finished` в группе `scores` и фиксирует смещение после записи в PostgreSQL. При недоступности PostgreSQL повторяет обработку с того же смещения до восстановления базы. Первичный ключ результата защищает таблицу от дублей при повторной доставке.
-- **API** отдаёт топ-10 через `GET /api/leaderboard` и результат с общим местом через `GET /api/results/{id}`. Выше стоят раунды с большим счётом. При равном счёте выше более ранний раунд, а при совпадении времени порядок определяет ID результата.
+- [`LeaderboardService`](api/scores/v1/leaderboard_service.proto) отдаёт топ-10 через `GetLeaderboard`. Выше стоят раунды с большим счётом. При равном счёте выше более ранний раунд, а при совпадении времени порядок определяет ID результата.
+- [`ResultsService`](api/scores/v1/results_service.proto) возвращает результат и место через `GetResult`, а через `SaveLocalResult` принимает результат локального матча.
+
+### Генерация клиентов и обработчиков
+
+Исходные `.proto` лежат в `api/scores/v1`. Для обновления сгенерированного кода
+установите Buf 1.75.0 и добавьте генераторы в `PATH`. Команды выполняются из
+корня бэкенда, рядом с клоном `orbital-run-frontend`.
+
+```sh
+go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.36.10
+go install connectrpc.com/connect/cmd/protoc-gen-connect-go@v1.19.1
+buf generate
+npm exec --package=@bufbuild/protoc-gen-es@2.17.0 -- \
+  buf generate --template buf.gen.web.yaml --output ../orbital-run-frontend
+```
 
 ## Демо очереди
 
@@ -98,7 +118,8 @@ docker compose exec kafka /opt/kafka/bin/kafka-consumer-groups.sh \
 
 ```sh
 docker compose start --wait scores
-curl http://localhost:8080/api/leaderboard
+grpcurl -plaintext -import-path api -proto scores/v1/leaderboard_service.proto \
+  -d '{}' localhost:8080 orbital.scores.v1.LeaderboardService/GetLeaderboard
 ```
 
 `scores` обработает событие после подключения к Kafka. Обновите страницу, чтобы увидеть рейтинг.
@@ -145,8 +166,8 @@ POSTGRES_PASSWORD=replace_with_generated_hex
    `BACKEND_SSH_KNOWN_HOSTS` (строка `known_hosts` с проверенным ключом хоста).
 3. Задайте переменную **репозитория** `DEPLOY_BACKEND=true` и запустите
    **Backend**. Workflow загрузит файлы Compose и Caddy, запустит
-   опубликованный образ и дождётся готовности сервисов. Проверить API можно
-   через `curl -fsS https://api.example.com/api/leaderboard`.
+   опубликованный образ и дождётся готовности сервисов. Проверьте загрузку
+   общего рейтинга в браузерном клиенте с новым адресом бэкенда.
 
 Если нужно запустить бэкенд вручную, скопируйте `compose.yaml`,
 `compose.public.yaml` и `Caddyfile` в каталог с `.env`, подставьте ссылку на
@@ -186,14 +207,13 @@ Kafka начинает работу со своим топиком и собст
 и `FRONTEND_ORIGIN=https://lagatun54.github.io`. Сервисы используют NATS,
 когда задан `NATS_URL` и пуст `KAFKA_BROKERS`. Подключите
 `POSTGRES_URI` из addon через Secret Group с алиасом `DATABASE_URL`.
-Проверьте `/api/leaderboard` на публичном адресе сервиса и используйте этот
-адрес в `BACKEND_URL` при следующем запуске **Frontend**.
+Задайте публичный адрес сервиса в `BACKEND_URL` при следующем запуске
+**Frontend** и проверьте загрузку рейтинга в браузере.
 
 Если прямой адрес Northflank недоступен из сети игрока, можно развернуть
 [прокси на Render](https://render.com/deploy?repo=https%3A%2F%2Fgithub.com%2Flagatun54%2Forbital-run).
-Прокси передаёт API и WebSocket на Northflank. После запуска проверьте
-`/api/leaderboard` по адресу Render из нужной сети, задайте этот адрес в
-`BACKEND_URL` и запустите **Frontend**. На бесплатном тарифе первый запрос
+Прокси передаёт gRPC-Web и WebSocket на Northflank. Задайте адрес Render
+в `BACKEND_URL`, запустите **Frontend** и проверьте рейтинг из нужной сети. На бесплатном тарифе первый запрос
 после простоя может занять около минуты.
 
 ## Публичный API на одном хосте
@@ -254,12 +274,12 @@ docker compose -f compose.yaml -f compose.public.yaml exec -T --index 1 game \
 | --- | --- | --- |
 | Юнит | Правила арены, имена пилотов, завершение и прерывание сессии | `go test -race ./api/... ./cmd/... ./config/... ./db/... ./internal/... ./tests/unit` |
 | Интеграция | Допуск по WebSocket Origin, движение игрока и встроенного бота | `go test -race -count=1 ./tests/integration` |
-| End-to-end | Добавление реплики через Caddy, отказ при заполненных слотах, матчи во время сбоев PostgreSQL и `scores`, HTTP/CORS и повторная отправка локального результата | `bash tests/e2e/run.sh` |
+| End-to-end | Добавление реплики через Caddy, отказ при заполненных слотах, матчи во время сбоев PostgreSQL и `scores`, gRPC-Web, CORS и повторная отправка локального результата | `bash tests/e2e/run.sh` |
 
 E2E нужен запущенный Docker с Compose v2. Скрипт собирает образ, поднимает
 отдельный стек с Caddy на свободном порту с пустой базой и удаляет тестовые контейнеры
-и тома при выходе. Тест играет два 32-секундных матча через WebSocket и HTTP.
-При остановленном `scores` API рейтинга возвращает `503`, а Kafka сохраняет
+и тома при выходе. Тест играет два 32-секундных матча через WebSocket и gRPC-Web.
+При остановленном `scores` API рейтинга возвращает gRPC-статус `Unavailable`, а Kafka сохраняет
 результат до запуска сервиса. CI выполняет все три набора перед публикацией
 образа.
 

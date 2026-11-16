@@ -4,11 +4,12 @@ package e2e
 
 import (
 	"context"
-	"net/http"
 	"os/exec"
 	"strings"
 	"testing"
 	"time"
+
+	"connectrpc.com/connect"
 )
 
 type postgresOutage struct {
@@ -35,8 +36,8 @@ func stopPostgres(t *testing.T, project string) *postgresOutage {
 
 func (outage *postgresOutage) recover(t *testing.T, api backend, resultID string) {
 	t.Helper()
-	res := api.request(t, t.Context(), http.MethodGet, "/api/results/"+resultID, "", http.StatusServiceUnavailable, nil)
-	res.Body.Close()
+	_, err := api.getResult(t.Context(), resultID)
+	assertRPCCode(t, err, connect.CodeUnavailable)
 	outage.waitForFailedWrite(t, resultID)
 
 	// Keep PostgreSQL down long enough for the Kafka consumer's 12-second write budget to expire.

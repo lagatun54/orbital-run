@@ -1,0 +1,17 @@
+syntax = "proto3";
+
+package orbital.scores.v1;
+
+import "scores/v1/match_result.proto";
+
+option go_package = "orbitalrun/api/scores/v1;scoresv1";
+
+service LeaderboardService {
+  rpc GetLeaderboard(GetLeaderboardRequest) returns (GetLeaderboardResponse);
+}
+
+message GetLeaderboardRequest {}
+
+message GetLeaderboardResponse {
+  repeated MatchResult entries = 1;
+}

@@ -1,0 +1,16 @@
+syntax = "proto3";
+
+package orbital.scores.v1;
+
+import "google/protobuf/timestamp.proto";
+
+option go_package = "orbitalrun/api/scores/v1;scoresv1";
+
+message MatchResult {
+  string id = 1;
+  string name = 2;
+  int32 score = 3;
+  int32 bot_score = 4;
+  google.protobuf.Timestamp finished_at = 5;
+  bool local = 6;
+}

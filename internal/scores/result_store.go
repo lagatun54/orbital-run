@@ -16,7 +16,7 @@ type RankedResult struct {
 	Rank int64 `json:"rank"`
 }
 
-// ResultStore provides the storage operations used by the scores HTTP API.
+// ResultStore provides the storage operations used by the scores RPCs.
 type ResultStore interface {
 	ResultWriter
 	Top(ctx context.Context) ([]arena.Result, error)
