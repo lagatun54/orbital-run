@@ -1,2 +1,20 @@
+# Local configuration
 .env
+
+# Go build and test artifacts
+/bin/
+*.test
+/coverage.out
+
+# Local editor files
+/.idea/
+/.history/
+/.vscode/*
+!/.vscode/settings.json
+!/.vscode/tasks.json
+!/.vscode/launch.json
+!/.vscode/extensions.json
+
+# OS metadata
 .DS_Store
+Thumbs.db

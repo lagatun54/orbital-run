@@ -13,6 +13,7 @@ on:
       - 'tests/**'
       - 'go.mod'
       - 'go.sum'
+      - 'Makefile'
       - 'Dockerfile'
       - '.dockerignore'
       - 'compose*.yaml'
@@ -30,6 +31,7 @@ on:
       - 'tests/**'
       - 'go.mod'
       - 'go.sum'
+      - 'Makefile'
       - 'Dockerfile'
       - '.dockerignore'
       - 'compose*.yaml'
@@ -56,6 +58,8 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
+      - name: Check Go modules and vet
+        run: make check
       - name: Validate Render relay
         run: |
           docker build --tag orbital-render-relay:ci deploy/render-relay
