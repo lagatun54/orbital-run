@@ -12,10 +12,12 @@ gRPC-Web для рейтинга и результатов и по WebSocket н�
 
 ## Локальный запуск
 
-Понадобится Docker с Compose v2. Укажите origin клиентского сервера:
+Понадобится Docker с Compose v2. Скопируйте шаблон окружения в `.env`.
+Если клиент запущен по другому адресу, измените `FRONTEND_ORIGIN` в этом файле.
 
 ```sh
-FRONTEND_ORIGIN=http://localhost:5173 docker compose up -d --build --wait
+cp .env.example .env
+docker compose up -d --build --wait
 grpcurl -plaintext -import-path api -proto scores/v1/leaderboard_service.proto \
   -d '{}' localhost:8080 orbital.scores.v1.LeaderboardService/GetLeaderboard
 ```
@@ -267,14 +269,15 @@ docker compose -f compose.yaml -f compose.public.yaml exec -T --index 1 game \
 
 ## Проверки
 
-`go test -race ./...` запускает юнит- и интеграционные тесты без Docker.
-Интеграционные тесты используют локальные TCP-сокеты.
+`make test` запускает юнит- и интеграционные тесты без Docker.
+Интеграционные тесты используют локальные TCP-сокеты. `make coverage`
+записывает профиль в `coverage.out` и выводит покрытие по функциям.
 
 | Уровень | Что проверяет | Команда |
 | --- | --- | --- |
 | Юнит | Правила арены, имена пилотов, завершение и прерывание сессии | `go test -race ./api/... ./cmd/... ./config/... ./db/... ./internal/... ./tests/unit` |
 | Интеграция | Допуск по WebSocket Origin, движение игрока и встроенного бота | `go test -race -count=1 ./tests/integration` |
-| End-to-end | Добавление реплики через Caddy, отказ при заполненных слотах, матчи во время сбоев PostgreSQL и `scores`, gRPC-Web, CORS и повторная отправка локального результата | `bash tests/e2e/run.sh` |
+| End-to-end | Добавление реплики через Caddy, отказ при заполненных слотах, матчи во время сбоев PostgreSQL и `scores`, HTTP/CORS и повторная отправка локального результата | `make e2e` |
 
 E2E нужен запущенный Docker с Compose v2. Скрипт собирает образ, поднимает
 отдельный стек с Caddy на свободном порту с пустой базой и удаляет тестовые контейнеры
