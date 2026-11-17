@@ -22,11 +22,11 @@ type scoresHandler struct {
 }
 
 // NewScoresHandler serves the internal RPCs and a readiness probe.
-func NewScoresHandler(store scores.ResultStore) http.Handler {
+func NewScoresHandler(store scores.ResultStore, ready func(context.Context) error) http.Handler {
 	service := scoresHandler{store: store}
 	router := scoresRPCs(service, service)
 	router.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
-		if _, err := store.Top(r.Context()); err != nil {
+		if err := ready(r.Context()); err != nil {
 			http.Error(w, "scores unavailable", http.StatusServiceUnavailable)
 			return
 		}

@@ -8,6 +8,7 @@ export GAME_REPLICAS=1
 export GAME_MAX_MATCHES=1
 export DEMO_DOMAIN=http://
 export POSTGRES_PASSWORD=orbital
+export REDIS_URL=redis://redis:6379/0
 project="orbital-e2e-$$-$RANDOM"
 override=$(mktemp)
 cat > "$override" <<'YAML'

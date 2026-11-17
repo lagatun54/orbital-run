@@ -27,6 +27,11 @@ grpcurl -plaintext -import-path api -proto scores/v1/leaderboard_service.proto \
 PostgreSQL и Kafka сохраняют данные в Docker-томах, а `kafka-init` создаёт
 топик `matches.finished`.
 
+Compose запускает Redis во внутренней сети для кэша топ-10. По умолчанию
+`scores` подключается к `redis://redis:6379/0`. Укажите другой `REDIS_URL`
+для внешнего Redis или задайте `REDIS_URL=`, чтобы отключить кэш. При запуске
+`scores` без Compose кэш включается только при заданном `REDIS_URL`.
+
 Запустите клиент по инструкции в [README клиента](https://github.com/lagatun54/orbital-run-frontend#readme).
 Его адрес должен совпадать с `FRONTEND_ORIGIN` (без пути и завершающего слеша).
 
@@ -43,7 +48,7 @@ docker compose down
 api/             WebSocket, Protobuf-контракты и обработчики RPC
 cmd/             точки запуска game, scores и orbital-stack
 config/          чтение переменных окружения
-db/              подключение к PostgreSQL и хранилище результатов
+db/              хранилище PostgreSQL и кэш Redis
   migration/     SQL-схема, которую scores применяет при запуске
   query/         запросы записи и чтения результатов
 internal/        игровые правила, цикл матча, бот, брокер и управление процессами
@@ -62,11 +67,10 @@ tests/           юнит-, интеграционные и сквозные т�
 | Как результат матча попадает в очередь и затем в PostgreSQL | [result.go](internal/game/result.go) публикует событие, [consumer.go](internal/scores/consumer.go) принимает его, [postgres.go](db/postgres.go) сохраняет |
 | Как сервер отвечает на запросы рейтинга | [api/scores_handler.go](api/scores_handler.go) и [SQL-запросы](db/query) |
 
-Файлы с интерфейсами названы по самим интерфейсам.
-
 - Игровой цикл передаёт результаты через [`ResultPublisher`](internal/game/result_publisher.go).
 - RPC-обработчики рейтинга и результатов используют [`ResultStore`](internal/scores/result_store.go).
   Для записи результатов из очереди достаточно [`ResultWriter`](internal/scores/result_writer.go).
+- [`scores.Store`](internal/scores/store.go) отвечает за запись результатов и за то, когда читать или обновлять кэш. [`cmd/scores`](cmd/scores/main.go) подключает PostgreSQL и, если задан `REDIS_URL`, [Redis](db/redis.go).
 - Kafka и NATS реализуют [`Producer`](internal/broker/producer.go) и
   [`Consumer`](internal/broker/consumer.go).
 
@@ -78,6 +82,7 @@ flowchart LR
     Game -->|"matches.finished"| Kafka["Apache Kafka"]
     Kafka --> Scores["Go / scores"]
     Scores --> PG[("PostgreSQL")]
+    Scores -->|кэш топ-10| Redis[("Redis")]
     Browser -->|gRPC-Web| Game
     Game -->|gRPC| Scores
 ```
@@ -86,6 +91,7 @@ flowchart LR
 - На каждом тике `game` направляет бота к ближайшему кристаллу.
 - **scores** читает топик `matches.finished` в группе `scores` и фиксирует смещение после записи в PostgreSQL. При недоступности PostgreSQL повторяет обработку с того же смещения до восстановления базы. Первичный ключ результата защищает таблицу от дублей при повторной доставке.
 - [`LeaderboardService`](api/scores/v1/leaderboard_service.proto) отдаёт топ-10 через `GetLeaderboard`. Выше стоят раунды с большим счётом. При равном счёте выше более ранний раунд, а при совпадении времени порядок определяет ID результата.
+- Топ-10 хранится в Redis до 30 секунд. Новый результат, который входит в топ, обновляет готовый список в Redis без продления его срока жизни. При совпадении очков и времени до микросекунды порядок по ID определяет PostgreSQL. Из PostgreSQL также читается топ-10 при промахе или недоступности Redis.
 - [`ResultsService`](api/scores/v1/results_service.proto) возвращает результат и место через `GetResult`, а через `SaveLocalResult` принимает результат локального матча.
 
 ### Генерация клиентов и обработчиков
@@ -209,6 +215,7 @@ Kafka начинает работу со своим топиком и собст
 и `FRONTEND_ORIGIN=https://lagatun54.github.io`. Сервисы используют NATS,
 когда задан `NATS_URL` и пуст `KAFKA_BROKERS`. Подключите
 `POSTGRES_URI` из addon через Secret Group с алиасом `DATABASE_URL`.
+Если в проекте есть Redis, передайте его адрес через `REDIS_URL`.
 Задайте публичный адрес сервиса в `BACKEND_URL` при следующем запуске
 **Frontend** и проверьте загрузку рейтинга в браузере.
 
@@ -277,7 +284,7 @@ docker compose -f compose.yaml -f compose.public.yaml exec -T --index 1 game \
 | --- | --- | --- |
 | Юнит | Правила арены, имена пилотов, завершение и прерывание сессии | `go test -race ./api/... ./cmd/... ./config/... ./db/... ./internal/... ./tests/unit` |
 | Интеграция | Допуск по WebSocket Origin, движение игрока и встроенного бота | `go test -race -count=1 ./tests/integration` |
-| End-to-end | Добавление реплики через Caddy, отказ при заполненных слотах, матчи во время сбоев PostgreSQL и `scores`, HTTP/CORS и повторная отправка локального результата | `make e2e` |
+| End-to-end | Добавление реплики через Caddy, отказ при заполненных слотах, матчи во время сбоев PostgreSQL и `scores`, HTTP/CORS, повторная отправка локального результата и работа рейтинга при отключении Redis | `make e2e` |
 
 E2E нужен запущенный Docker с Compose v2. Скрипт собирает образ, поднимает
 отдельный стек с Caddy на свободном порту с пустой базой и удаляет тестовые контейнеры

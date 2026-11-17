@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -189,6 +190,73 @@ func TestBackend(t *testing.T) {
 		if ranked.GetRank() < 1 || !sameResult(ranked.GetResult(), end.Result) {
 			t.Fatalf("stored result = %+v; want %+v with a positive rank", ranked, end.Result)
 		}
+	})
+
+	t.Run("leaderboard cache updates in place", func(t *testing.T) {
+		project := os.Getenv("E2E_COMPOSE_PROJECT")
+		if project == "" {
+			t.Skip("requires a disposable Compose project from tests/e2e/run.sh")
+		}
+		const key = "orbital:scores:leaderboard:v2"
+		redisValue := func(command string) string {
+			t.Helper()
+			return composeOutput(t, project, "exec", "-T", "redis", "redis-cli", "--raw", command, key)
+		}
+		save := func(id string, score int32) {
+			t.Helper()
+			botScore := int32(0)
+			assertRPCCode(t, api.saveLocalResult(t.Context(), &scoresv1.SaveLocalResultRequest{
+				Id: id, Name: "Cache Pilot", Score: &score, BotScore: &botScore,
+			}), 0)
+		}
+		checkLeaderboard := func(id string) {
+			t.Helper()
+			res, err := api.getLeaderboard(t.Context())
+			assertRPCCode(t, err, 0)
+			for _, entry := range res.Msg.GetEntries() {
+				if entry.GetId() == id {
+					return
+				}
+			}
+			t.Fatalf("leaderboard did not include %s", id)
+		}
+
+		for i := 16; i < 26; i++ {
+			save(fmt.Sprintf("local-00000000-0000-4000-8000-%012x", i), 200)
+		}
+		const first = "local-00000000-0000-4000-8000-000000000004"
+		save(first, 299)
+		checkLeaderboard(first)
+		cached := redisValue("GET")
+		if !strings.Contains(cached, first) {
+			t.Fatalf("Redis did not store the leaderboard: %q", cached)
+		}
+		ttl := redisValue("PTTL")
+		if ms, err := strconv.Atoi(ttl); err != nil || ms <= 0 || ms > 30_000 {
+			t.Fatalf("expected cache TTL between 1ms and 30s, got %q", ttl)
+		}
+
+		expiry := redisValue("PEXPIRETIME")
+		save("local-00000000-0000-4000-8000-000000000007", 199)
+		save("local-00000000-0000-4000-8000-000000000008", 200) // A later finish loses the tie.
+		if after := redisValue("GET"); after != cached {
+			t.Fatalf("results below tenth place changed the cached leaderboard: %q", after)
+		}
+
+		const second = "local-00000000-0000-4000-8000-000000000005"
+		save(second, 300)
+		if after := redisValue("GET"); !strings.Contains(after, second) || after == cached {
+			t.Fatalf("Redis did not update the leaderboard on save: %q", after)
+		}
+		if after := redisValue("PEXPIRETIME"); after != expiry {
+			t.Fatalf("cache expiration changed from %q to %q", expiry, after)
+		}
+		checkLeaderboard(second)
+
+		composeOutput(t, project, "stop", "redis")
+		const third = "local-00000000-0000-4000-8000-000000000006"
+		save(third, 300)
+		checkLeaderboard(third)
 	})
 }
 

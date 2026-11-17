@@ -48,6 +48,13 @@ func (s *PostgresStore) Close() {
 	s.db.Close()
 }
 
+// Ready checks that PostgreSQL is reachable without reading from the cache.
+func (s *PostgresStore) Ready(ctx context.Context) error {
+	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	return s.db.Ping(ctx)
+}
+
 func (s *PostgresStore) Top(ctx context.Context) ([]arena.Result, error) {
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
@@ -81,13 +88,17 @@ func (s *PostgresStore) FindRanked(ctx context.Context, id string) (scores.Ranke
 	return result, err
 }
 
-func (s *PostgresStore) Save(ctx context.Context, result arena.Result) error {
+// Insert returns the result with the timestamp assigned by PostgreSQL.
+func (s *PostgresStore) Insert(ctx context.Context, result arena.Result) (arena.Result, bool, error) {
 	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
-	_, err := s.db.Exec(ctx, saveResultSQL,
-		result.ID, result.Name, result.Score, result.BotScore, result.FinishedAt, result.Local)
-	if err != nil {
-		return fmt.Errorf("store match %s: %w", result.ID, err)
+	err := s.db.QueryRow(ctx, saveResultSQL,
+		result.ID, result.Name, result.Score, result.BotScore, result.FinishedAt, result.Local).Scan(&result.FinishedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return arena.Result{}, false, nil
 	}
-	return nil
+	if err != nil {
+		return arena.Result{}, false, fmt.Errorf("store match %s: %w", result.ID, err)
+	}
+	return result, true, nil
 }

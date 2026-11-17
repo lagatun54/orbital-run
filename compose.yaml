@@ -20,6 +20,11 @@ services:
       retries: 20
     restart: unless-stopped
 
+  redis:
+    image: redis:8.4-alpine
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    restart: unless-stopped
+
   kafka:
     image: apache/kafka:4.1.2
     environment:
@@ -89,6 +94,7 @@ services:
     environment:
       KAFKA_BROKERS: kafka:9092
       DATABASE_URL: "host=postgres user=orbital password=${POSTGRES_PASSWORD:-orbital} dbname=orbital sslmode=disable"
+      REDIS_URL: "${REDIS_URL-redis://redis:6379/0}"
     depends_on:
       postgres:
         condition: service_healthy
