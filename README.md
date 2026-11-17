@@ -7,9 +7,11 @@
 
 ## Быстрый запуск
 
-Нужны Docker и Docker Compose. Из корня репозитория:
+Нужны Git, Docker и Docker Compose. Склонируйте репозиторий и запустите сервисы.
 
 ```sh
+git clone https://github.com/lagatun54/orbital-run-backend.git
+cd orbital-run-backend
 cp .env.example .env
 docker compose up -d --build --wait
 curl -fsS -o /dev/null -w '%{http_code}\n' http://localhost:8080/healthz
