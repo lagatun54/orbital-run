@@ -1,318 +1,100 @@
-# Орбитальный сбор
+# Orbital Run — Go-бэкенд
 
-Браузерная 2D-аркада на PixiJS и Go. За 30 секунд соберите больше кристаллов, чем бот. Управление стрелками, WASD или экранными кнопками. После раунда сервер отправляет результат в общий топ-10.
+Сервер для аркады, в которой игрок соревнуется с ботом за кристаллы. Бэкенд
+ведёт онлайн-матчи по WebSocket, сохраняет их результаты и отдаёт общий топ-10
+через gRPC и gRPC-Web. [Клиент игры](https://github.com/lagatun54/orbital-run-frontend)
+находится в отдельном репозитории.
 
-## Разделение репозиториев
+## Быстрый запуск
 
-Go-бэкенд и [клиент игры](https://github.com/lagatun54/orbital-run-frontend)
-собираются и публикуются из отдельных репозиториев. Клиент подключается по
-gRPC-Web для рейтинга и результатов и по WebSocket на `/ws` для матча.
-При переходе с REST обновите бэкенд и браузерный клиент в рамках одного выпуска.
-См. [инструкцию по миграции клиента](docs/frontend-grpc-migration.md).
-
-## Локальный запуск
-
-Понадобится Docker с Compose v2. Скопируйте шаблон окружения в `.env`.
-Если клиент запущен по другому адресу, измените `FRONTEND_ORIGIN` в этом файле.
+Нужны Docker и Docker Compose. Из корня репозитория:
 
 ```sh
 cp .env.example .env
 docker compose up -d --build --wait
+curl -fsS -o /dev/null -w '%{http_code}\n' http://localhost:8080/healthz
+```
+
+Если игровой сервер видит брокер сообщений, проверка вернёт `204`. Чтобы
+проверить и сервис рейтинга, вызовите RPC через `grpcurl`:
+
+```sh
 grpcurl -plaintext -import-path api -proto scores/v1/leaderboard_service.proto \
   -d '{}' localhost:8080 orbital.scores.v1.LeaderboardService/GetLeaderboard
 ```
 
-Для ручной проверки установите `grpcurl`. Для другого порта API задайте
-`GAME_PORT`. При ошибке Go-прокси можно указать `GO_MODULE_PROXY`.
-PostgreSQL и Kafka сохраняют данные в Docker-томах, а `kafka-init` создаёт
-топик `matches.finished`.
+На пустой базе список будет пуст. Для игры запустите клиент по
+[его инструкции](https://github.com/lagatun54/orbital-run-frontend#readme).
+Укажите адрес API `http://localhost:8080` в настройках клиента, а в `.env`
+бэкенда задайте `FRONTEND_ORIGIN` равным адресу страницы клиента без пути
+и завершающего слеша. По умолчанию это `http://localhost:5173`.
 
-Compose запускает Redis во внутренней сети для кэша топ-10. По умолчанию
-`scores` подключается к `redis://redis:6379/0`. Укажите другой `REDIS_URL`
-для внешнего Redis или задайте `REDIS_URL=`, чтобы отключить кэш. При запуске
-`scores` без Compose кэш включается только при заданном `REDIS_URL`.
-
-Запустите клиент по инструкции в [README клиента](https://github.com/lagatun54/orbital-run-frontend#readme).
-Его адрес должен совпадать с `FRONTEND_ORIGIN` (без пути и завершающего слеша).
+| Переменная Compose | Назначение | По умолчанию |
+| --- | --- | --- |
+| `GAME_PORT` | Локальный порт API | `8080` |
+| `GAME_MAX_MATCHES` | Лимит одновременных матчей на экземпляр `game` | `64` |
+| `POSTGRES_PASSWORD` | Пароль локальной базы | `orbital` |
+| `REDIS_URL` | Адрес кэша; пустое значение отключает кэш | `redis://redis:6379/0` |
 
 ```sh
 docker compose logs -f game scores
 docker compose down
 ```
 
-## Как проходит матч
+Обычный `docker compose down` сохраняет тома с данными PostgreSQL и Kafka.
 
-### С чего начать читать код
-
-```text
-api/             WebSocket, Protobuf-контракты и обработчики RPC
-cmd/             точки запуска game, scores и orbital-stack
-config/          чтение переменных окружения
-db/              хранилище PostgreSQL и кэш Redis
-  migration/     SQL-схема, которую scores применяет при запуске
-  query/         запросы записи и чтения результатов
-internal/        игровые правила, цикл матча, бот, брокер и управление процессами
-tests/           юнит-, интеграционные и сквозные тесты
-```
-
-В каждой папке `cmd/` один `main.go`. Команда читает настройки и подключает
-нужные пакеты. Управление ботом рассчитывается внутри процесса `game`.
-
-| Что ищу | Где смотреть |
-| --- | --- |
-| Публичные маршруты, включая `/ws` и API рейтинга | [api/routes.go](api/routes.go) |
-| Как бот выбирает направление к ближайшему кристаллу | [internal/bot/steering.go](internal/bot/steering.go) |
-| Как браузер подключается к матчу и передаёт нажатия | [match_handler.go](api/match_handler.go), [client_message.go](api/client_message.go) |
-| Что происходит на каждом тике и как начисляются очки | [session.go](internal/game/session.go) вызывает [`Match.Step`](internal/arena/arena.go) |
-| Как результат матча попадает в очередь и затем в PostgreSQL | [result.go](internal/game/result.go) публикует событие, [consumer.go](internal/scores/consumer.go) принимает его, [postgres.go](db/postgres.go) сохраняет |
-| Как сервер отвечает на запросы рейтинга | [api/scores_handler.go](api/scores_handler.go) и [SQL-запросы](db/query) |
-
-- Игровой цикл передаёт результаты через [`ResultPublisher`](internal/game/result_publisher.go).
-- RPC-обработчики рейтинга и результатов используют [`ResultStore`](internal/scores/result_store.go).
-  Для записи результатов из очереди достаточно [`ResultWriter`](internal/scores/result_writer.go).
-- [`scores.Store`](internal/scores/store.go) отвечает за запись результатов и за то, когда читать или обновлять кэш. [`cmd/scores`](cmd/scores/main.go) подключает PostgreSQL и, если задан `REDIS_URL`, [Redis](db/redis.go).
-- Kafka и NATS реализуют [`Producer`](internal/broker/producer.go) и
-  [`Consumer`](internal/broker/consumer.go).
-
-### Поток данных
+## Как работает сервер
 
 ```mermaid
 flowchart LR
-    Browser["Браузер / PixiJS"] <-->|WebSocket| Game["Go / game"]
-    Game -->|"matches.finished"| Kafka["Apache Kafka"]
-    Kafka --> Scores["Go / scores"]
-    Scores --> PG[("PostgreSQL")]
-    Scores -->|кэш топ-10| Redis[("Redis")]
-    Browser -->|gRPC-Web| Game
-    Game -->|gRPC| Scores
+    Client["Браузер"] <-->|WebSocket| Game["game"]
+    Client -->|gRPC-Web| Game
+    Game -->|gRPC| Scores["scores"]
+    Game -->|matches.finished| Kafka["Kafka"]
+    Kafka --> Scores
+    Scores --> Postgres[("PostgreSQL")]
+    Scores --> Redis[("Redis")]
 ```
 
-- **game** ведёт серверную симуляцию с частотой 20 Гц. Переменная `GAME_MAX_MATCHES` задаёт число слотов на экземпляр `game` (по умолчанию 64). Браузер отправляет направление движения. Сервер определяет позиции, момент сбора кристаллов и итоговый счёт. По завершении матча сервер публикует результат в Kafka с ID матча в качестве ключа сообщения.
-- На каждом тике `game` направляет бота к ближайшему кристаллу.
-- **scores** читает топик `matches.finished` в группе `scores` и фиксирует смещение после записи в PostgreSQL. При недоступности PostgreSQL повторяет обработку с того же смещения до восстановления базы. Первичный ключ результата защищает таблицу от дублей при повторной доставке.
-- [`LeaderboardService`](api/scores/v1/leaderboard_service.proto) отдаёт топ-10 через `GetLeaderboard`. Выше стоят раунды с большим счётом. При равном счёте выше более ранний раунд, а при совпадении времени порядок определяет ID результата.
-- Топ-10 хранится в Redis до 30 секунд. Новый результат, который входит в топ, обновляет готовый список в Redis без продления его срока жизни. При совпадении очков и времени до микросекунды порядок по ID определяет PostgreSQL. Из PostgreSQL также читается топ-10 при промахе или недоступности Redis.
-- [`ResultsService`](api/scores/v1/results_service.proto) возвращает результат и место через `GetResult`, а через `SaveLocalResult` принимает результат локального матча.
+1. [`game`](cmd/game/main.go) принимает направление движения по WebSocket
+   на `/ws`. [Игровой цикл](internal/game/session.go) обновляет арену 20 раз
+   в секунду: сервер рассчитывает движение игрока и бота, сбор кристаллов и счёт.
+2. После матча `game` отправляет событие в Kafka с ID матча как ключом.
+   [`scores`](cmd/scores/main.go) читает события из топика `matches.finished`
+   и подтверждает обработку после записи в PostgreSQL. Если база недоступна,
+   обработка повторяется; повторная доставка того же ID не создаёт дубль.
+3. [`scores`](internal/scores/store.go) читает топ-10 из Redis. Снимок живёт
+   до 30 секунд; при промахе или недоступности Redis сервис читает PostgreSQL.
+   Результаты сортируются по убыванию счёта, затем по времени завершения и ID.
 
-### Генерация клиентов и обработчиков
+| Публичный API | Что делает |
+| --- | --- |
+| `GET /ws` | Открывает WebSocket для онлайн-матча |
+| `GET /healthz` | Проверяет доступность брокера для `game` |
+| [`LeaderboardService.GetLeaderboard`](api/scores/v1/leaderboard_service.proto) | Возвращает общий топ-10 |
+| [`ResultsService.GetResult`](api/scores/v1/results_service.proto) | Возвращает результат и его место в рейтинге по ID |
+| [`ResultsService.SaveLocalResult`](api/scores/v1/results_service.proto) | Принимает счёт, рассчитанный клиентом, и помечает результат как локальный |
 
-Исходные `.proto` лежат в `api/scores/v1`. Для обновления сгенерированного кода
-установите Buf 1.75.0 и добавьте генераторы в `PATH`. Команды выполняются из
-корня бэкенда, рядом с клоном `orbital-run-frontend`.
+Точки входа — в [`cmd/`](cmd/), маршруты и Protobuf-контракты —
+в [`api/`](api/), правила арены и логика бота — в [`internal/`](internal/),
+схема и запросы PostgreSQL — в [`db/`](db/). Как обновить контракты и
+сгенерировать код клиента, описано в [руководстве по gRPC](docs/frontend-grpc-migration.md).
+
+## Проверки и выпуск
+
+Для локальных проверок нужна версия Go из [`go.mod`](go.mod). Юнит-тестам и
+интеграционным тестам Docker не нужен; интеграционные тесты открывают локальные
+TCP-сокеты. Сквозные тесты поднимают отдельный стек Compose.
 
 ```sh
-go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.36.10
-go install connectrpc.com/connect/cmd/protoc-gen-connect-go@v1.19.1
-buf generate
-npm exec --package=@bufbuild/protoc-gen-es@2.17.0 -- \
-  buf generate --template buf.gen.web.yaml --output ../orbital-run-frontend
+make check   # Go-модули и go vet
+make test    # тесты с детектором гонок
+make e2e     # матчи, рейтинг, сбои сервисов и масштабирование
 ```
 
-## Демо очереди
+На отдельном тестовом стеке можно замерить интервалы между игровыми кадрами
+под нагрузкой: `go run ./tests/load -url http://127.0.0.1:8080 -matches 64 -max-p99 75ms`.
+Этот сценарий играет полные матчи и записывает их результаты в рейтинг.
 
-```sh
-docker compose stop scores
-```
-
-Сыграйте полный раунд. Сервер покажет счёт и отправит результат в Kafka.
-Состояние группы потребителей можно посмотреть командой:
-
-```sh
-docker compose exec kafka /opt/kafka/bin/kafka-consumer-groups.sh \
-  --bootstrap-server kafka:9092 --describe --group scores
-```
-
-Запустите сервис рекордов снова.
-
-```sh
-docker compose start --wait scores
-grpcurl -plaintext -import-path api -proto scores/v1/leaderboard_service.proto \
-  -d '{}' localhost:8080 orbital.scores.v1.LeaderboardService/GetLeaderboard
-```
-
-`scores` обработает событие после подключения к Kafka. Обновите страницу, чтобы увидеть рейтинг.
-
-## Раздельный выпуск через GitHub
-
-Бэкенд публикуется из этого репозитория через **Actions → Backend**.
-Настройка GitHub Pages для отдельного клиентского репозитория описана в
-[README клиента](https://github.com/lagatun54/orbital-run-frontend#readme).
-
-### Бэкенд: GHCR и Docker Compose
-
-**Backend** проверяет Go и запускает Compose с образом без фронтенда. После
-успешной проверки в основной ветке он публикует образ для Linux AMD64 и ARM64
-в `ghcr.io/<владелец>/<репозиторий>-backend`. Ссылка на конкретный образ с
-`@sha256:…` появится в **Summary** запуска.
-
-Для постоянной работы бэкенда нужен Linux-хост с Docker Compose 2.24.4 или новее: GitHub
-Pages обслуживает статику, GHCR хранит образ, а раннер GitHub Actions работает
-только на время задачи. Для доступа из Pages направьте домен API на хост и
-откройте 80 и 443 для Caddy. В домашнем каталоге пользователя деплоя создайте
-каталог `orbital-backend` с файлом `.env`:
-
-```dotenv
-DEMO_DOMAIN=api.example.com
-FRONTEND_ORIGIN=https://owner.github.io
-POSTGRES_PASSWORD=replace_with_generated_hex
-```
-
-`FRONTEND_ORIGIN` — адрес страницы без пути и завершающего слеша. Для
-`https://owner.github.io/repo/` это `https://owner.github.io`; для собственного
-домена укажите его. Сгенерируйте пароль через `openssl rand -hex 24` и
-ограничьте доступ к файлу командой `chmod 600 .env`. Если пакет GHCR приватный,
-один раз выполните на хосте `docker login ghcr.io` с токеном с доступом
-`read:packages`.
-
-Чтобы выкатывать бэкенд из GitHub:
-
-1. В **Settings → Environments** создайте окружение `backend`, доступное
-   только из основной ветки.
-2. Задайте в окружении переменные `BACKEND_SSH_HOST` (имя хоста или IPv4,
-   SSH-порт 22) и `BACKEND_SSH_USER` (пользователь с доступом к Docker).
-   Добавьте секреты `BACKEND_SSH_KEY` (приватный ключ пользователя деплоя) и
-   `BACKEND_SSH_KNOWN_HOSTS` (строка `known_hosts` с проверенным ключом хоста).
-3. Задайте переменную **репозитория** `DEPLOY_BACKEND=true` и запустите
-   **Backend**. Workflow загрузит файлы Compose и Caddy, запустит
-   опубликованный образ и дождётся готовности сервисов. Проверьте загрузку
-   общего рейтинга в браузерном клиенте с новым адресом бэкенда.
-
-Если нужно запустить бэкенд вручную, скопируйте `compose.yaml`,
-`compose.public.yaml` и `Caddyfile` в каталог с `.env`, подставьте ссылку на
-образ из **Summary** и выполните:
-
-```sh
-BACKEND_IMAGE='ghcr.io/owner/repo-backend@sha256:…' \
-  docker compose -f compose.yaml -f compose.public.yaml \
-    up -d --no-build --pull always --wait
-```
-
-Для отката подставьте предыдущий digest и используйте файлы Compose из
-соответствующего выпуска. Данные PostgreSQL и Kafka сохраняются в томах Compose.
-
-При обновлении с версии, использующей NATS, дайте старому `scores` обработать очередь
-JetStream перед обновлением. Уже записанные результаты остаются в PostgreSQL.
-Kafka начинает работу со своим топиком и собственной группой потребителей.
-
-Если связь пропала до начала матча, игра запускает локальный раунд. Браузер
-сохраняет завершённый результат и отправляет его при восстановлении доступа
-к API. В общем рейтинге такие записи помечены «локально», поскольку счёт
-рассчитан на клиенте. При равных очках для локальной записи используется время
-её приёма сервером.
-
-### Демо на Northflank Sandbox с NATS JetStream
-
-В проекте нужны PostgreSQL 17 и два сервиса:
-
-- `orbital-nats` запускает `nats:2.14-alpine` с аргументами
-  `-js -sd /tmp/jetstream`. Порт TCP `4222` доступен внутри проекта.
-  Без постоянного тома очередь может сброситься при замене контейнера.
-- `orbital-run` собирается из корневого `Dockerfile` с target `northflank`.
-  В одном контейнере запускаются `game` и `scores`. Откройте только
-  HTTP-порт `8080`, чтобы Northflank выдал адрес HTTPS.
-
-В runtime-переменных `orbital-run` задайте `NATS_URL=nats://orbital-nats:4222`
-и `FRONTEND_ORIGIN=https://lagatun54.github.io`. Сервисы используют NATS,
-когда задан `NATS_URL` и пуст `KAFKA_BROKERS`. Подключите
-`POSTGRES_URI` из addon через Secret Group с алиасом `DATABASE_URL`.
-Если в проекте есть Redis, передайте его адрес через `REDIS_URL`.
-Задайте публичный адрес сервиса в `BACKEND_URL` при следующем запуске
-**Frontend** и проверьте загрузку рейтинга в браузере.
-
-Если прямой адрес Northflank недоступен из сети игрока, можно развернуть
-[прокси на Render](https://render.com/deploy?repo=https%3A%2F%2Fgithub.com%2Flagatun54%2Forbital-run).
-Прокси передаёт gRPC-Web и WebSocket на Northflank. Задайте адрес Render
-в `BACKEND_URL`, запустите **Frontend** и проверьте рейтинг из нужной сети. На бесплатном тарифе первый запрос
-после простоя может занять около минуты.
-
-## Публичный API на одном хосте
-
-Для публичного API нужен Linux-хост с Docker Compose и доменом, указывающим на
-его IP. Откройте порты 80 и 443: Caddy настроит HTTPS и проксирование WebSocket.
-Создайте `.env` с доменом API, origin отдельно опубликованного клиента и паролем:
-
-```dotenv
-DEMO_DOMAIN=api.example.com
-FRONTEND_ORIGIN=https://owner.github.io
-POSTGRES_PASSWORD=replace_with_generated_hex
-```
-
-```sh
-docker compose -f compose.yaml -f compose.public.yaml up -d --build --wait
-```
-
-Укажите `https://api.example.com` как `BACKEND_URL` при сборке клиента.
-
-### Масштабирование матчей в Compose
-
-В публичном стеке можно указать в `.env` `GAME_REPLICAS=2` и
-`GAME_MAX_MATCHES=64`. Это даёт 128 слотов на две реплики. Фактическая ёмкость
-зависит от ресурсов хоста. Caddy проверяет список реплик через Docker DNS с
-интервалом обновления 5 секунд и направляет новые подключения `/ws` на менее
-занятую реплику. Когда слоты заполнены, новые матчи получают `503`. Рейтинг
-доступен и при заполненных слотах.
-
-После изменения только `GAME_REPLICAS` добавьте реплики командой ниже. Для стека
-из GHCR укажите тот же `BACKEND_IMAGE`, с которым он запущен.
-
-```sh
-docker compose -f compose.yaml -f compose.public.yaml up -d --no-deps --no-recreate --wait game
-```
-
-Существующий WebSocket остаётся на своей реплике до конца раунда. При уменьшении
-числа реплик или пересоздании контейнера матчи на остановленной реплике прервутся.
-Изменение `GAME_MAX_MATCHES` применяется при пересоздании `game` и Caddy обычной
-командой запуска публичного стека.
-
-Каждый `game` отдаёт на `/metrics` число занятых слотов, их лимит и счётчик
-отказов обработчика. Слот учитывается с начала WebSocket-рукопожатия до выхода
-из обработчика. Для публичного Compose метрики доступны внутри сети контейнеров,
-например с первой реплики:
-
-```sh
-docker compose -f compose.yaml -f compose.public.yaml exec -T --index 1 game \
-  wget -qO- http://127.0.0.1:8080/metrics
-```
-
-## Проверки
-
-`make test` запускает юнит- и интеграционные тесты без Docker.
-Интеграционные тесты используют локальные TCP-сокеты. `make coverage`
-записывает профиль в `coverage.out` и выводит покрытие по функциям.
-
-| Уровень | Что проверяет | Команда |
-| --- | --- | --- |
-| Юнит | Правила арены, имена пилотов, завершение и прерывание сессии | `go test -race ./api/... ./cmd/... ./config/... ./db/... ./internal/... ./tests/unit` |
-| Интеграция | Допуск по WebSocket Origin, движение игрока и встроенного бота | `go test -race -count=1 ./tests/integration` |
-| End-to-end | Добавление реплики через Caddy, отказ при заполненных слотах, матчи во время сбоев PostgreSQL и `scores`, HTTP/CORS, повторная отправка локального результата и работа рейтинга при отключении Redis | `make e2e` |
-
-E2E нужен запущенный Docker с Compose v2. Скрипт собирает образ, поднимает
-отдельный стек с Caddy на свободном порту с пустой базой и удаляет тестовые контейнеры
-и тома при выходе. Тест играет два 32-секундных матча через WebSocket и gRPC-Web.
-При остановленном `scores` API рейтинга возвращает gRPC-статус `Unavailable`, а Kafka сохраняет
-результат до запуска сервиса. CI выполняет все три набора перед публикацией
-образа.
-
-Если тестовый стек уже поднят с пустой базой, E2E можно запустить отдельно:
-
-```sh
-E2E_BASE_URL=http://127.0.0.1:8080 FRONTEND_ORIGIN=https://frontend.example.com \
-  go test -race -count=1 -tags=e2e -timeout=90s -v ./tests/e2e
-```
-
-### Нагрузочная проверка
-
-На отдельном тестовом стеке запускайте полные матчи через WebSocket. Чтобы
-измерить ёмкость одной реплики, оставьте одну реплику и задайте
-`GAME_MAX_MATCHES` не ниже выбранного числа клиентов. Для проверки балансировки
-направьте тест на Caddy и задайте число матчей больше лимита одной реплики.
-
-```sh
-go run ./tests/load -url http://127.0.0.1:8080 -matches 64 -max-p99 75ms
-```
-
-Если требуется заголовок браузера, передайте `-origin` со значением
-`FRONTEND_ORIGIN`. Команда измеряет интервалы между полученными игровыми кадрами
-и проверяет завершение всех раундов с подтверждением очереди. Эти раунды
-публикуют результаты в рейтинг. Увеличивайте число клиентов и сверяйте p99 с
-целевым интервалом 50 мс, учитывая задержки сети и нагрузку на машину с клиентом.
+[Руководство по развёртыванию](docs/deployment.md) описывает публикацию образа
+в GHCR, запуск с Caddy, масштабирование `game` и вариант с Northflank и NATS.
