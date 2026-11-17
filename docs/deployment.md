@@ -59,6 +59,13 @@ Kafka начинает работу со своим топиком и собст
 
 ## Демо на Northflank с NATS JetStream
 
+После успешных проверок GitHub Actions запускает сборку проверенного коммита
+в сервисе `default/orbital-run` и ждёт его выкладки. В окружении GitHub
+`backend` хранится секрет `NORTHFLANK_API_TOKEN`. Токену нужны права
+`Services → General → Read` и `Update` в проекте `Default`.
+В Northflank выключите CI сервиса, чтобы сборку запускал GitHub Actions.
+Оставьте CD включённым, чтобы Northflank выкладывал результат сборки.
+
 В проекте нужны PostgreSQL 17 и два сервиса:
 
 - `orbital-nats` запускает `nats:2.14-alpine` с аргументами

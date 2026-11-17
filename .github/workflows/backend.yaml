@@ -110,7 +110,57 @@ jobs:
         run: |
           echo "Backend image: \`$IMAGE\`" >> "$GITHUB_STEP_SUMMARY"
 
+  deploy-northflank:
+    name: Deploy to Northflank
+    if: github.event_name != 'pull_request' && github.ref_name == github.event.repository.default_branch
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions: {}
+    environment: backend
+    steps:
+      - name: Build and wait for the tested commit
+        shell: bash
+        env:
+          NORTHFLANK_API_TOKEN: ${{ secrets.NORTHFLANK_API_TOKEN }}
+          NORTHFLANK_SERVICE_URL: https://api.northflank.com/v1/projects/default/services/orbital-run
+        run: |
+          : "${NORTHFLANK_API_TOKEN:?Set the backend environment secret NORTHFLANK_API_TOKEN}"
+          auth=(-H "Authorization: Bearer $NORTHFLANK_API_TOKEN")
+          payload=$(jq -nc --arg sha "$GITHUB_SHA" '{sha: $sha}')
+          build_id=$(curl --fail --silent --show-error --max-time 30 "${auth[@]}" \
+            -H 'Content-Type: application/json' -d "$payload" "$NORTHFLANK_SERVICE_URL/build" |
+            jq -er '.data.id | select(type == "string" and test("^[a-z0-9-]+$"))')
+          echo "Northflank build: $build_id"
+
+          while true; do
+            build=$(curl --fail --silent --show-error --retry 2 --max-time 30 "${auth[@]}" \
+              "$NORTHFLANK_SERVICE_URL/build/$build_id")
+            build_status=$(jq -er '.data.status' <<< "$build")
+            echo "Build status: $build_status"
+            case "$build_status" in
+              SUCCESS) break ;;
+              ABORTED|FAILURE|SUBMISSION_FAILURE|CRASHED)
+                echo "::error::Northflank build ended with $build_status"
+                exit 1
+                ;;
+            esac
+            sleep 15
+          done
+
+          while true; do
+            deployments=$(curl --fail --silent --show-error --retry 2 --max-time 30 "${auth[@]}" \
+              "$NORTHFLANK_SERVICE_URL/deployments?per_page=5")
+            if jq -e --arg sha "$GITHUB_SHA" \
+              'any(.data.deployments[]; .active and .commit.sha == $sha)' <<< "$deployments" > /dev/null; then
+              echo "Northflank is serving commit $GITHUB_SHA"
+              break
+            fi
+            sleep 15
+          done
+
   deploy:
+    name: Deploy over SSH (optional)
     if: vars.DEPLOY_BACKEND == 'true' && github.ref_name == github.event.repository.default_branch
     needs: publish
     runs-on: ubuntu-latest
