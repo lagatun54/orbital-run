@@ -92,7 +92,9 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
       - name: Name the image
         id: image
-        run: echo "name=ghcr.io/${GITHUB_REPOSITORY,,}-backend" >> "$GITHUB_OUTPUT"
+        run: |
+          repository=$(printf '%s' "$GITHUB_REPOSITORY" | tr '[:upper:]' '[:lower:]')
+          echo "name=ghcr.io/${repository%-backend}-backend" >> "$GITHUB_OUTPUT"
       - uses: docker/build-push-action@v6
         id: push
         with:

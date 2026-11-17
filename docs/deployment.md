@@ -4,7 +4,7 @@
 
 Процесс [Backend](../.github/workflows/backend.yaml) проверяет Go-код и запускает
 сквозные тесты в Compose. После успешной проверки в основной ветке он публикует
-образ для Linux AMD64 и ARM64 в `ghcr.io/<владелец>/<репозиторий>-backend`.
+образ для Linux AMD64 и ARM64 в `ghcr.io/lagatun54/orbital-run-backend`.
 Ссылка на образ с `@sha256:…` появится в **Summary** запуска.
 
 Для постоянной работы бэкенда нужен Linux-хост с Docker Compose 2.24.4 или новее: GitHub
@@ -77,7 +77,7 @@ Kafka начинает работу со своим топиком и собст
 **Frontend** и проверьте загрузку рейтинга в браузере.
 
 Если прямой адрес Northflank недоступен из сети игрока, можно развернуть
-[прокси на Render](https://render.com/deploy?repo=https%3A%2F%2Fgithub.com%2Flagatun54%2Forbital-run).
+[прокси на Render](https://render.com/deploy?repo=https%3A%2F%2Fgithub.com%2Flagatun54%2Forbital-run-backend).
 Прокси передаёт gRPC-Web и WebSocket на Northflank. Задайте адрес Render
 в `BACKEND_URL`, запустите **Frontend** и проверьте рейтинг из нужной сети.
 
