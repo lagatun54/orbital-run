@@ -19,6 +19,10 @@ type RankedResult struct {
 // ResultStore provides the storage operations used by the scores RPCs.
 type ResultStore interface {
 	ResultWriter
+	resultReader
+}
+
+type resultReader interface {
 	Top(ctx context.Context) ([]arena.Result, error)
 	FindRanked(ctx context.Context, id string) (RankedResult, error)
 }

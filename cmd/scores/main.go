@@ -24,11 +24,22 @@ func main() {
 func run(ctx context.Context) error {
 	startup, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	store, err := db.OpenPostgres(startup, config.Env("DATABASE_URL", "postgres://orbital:orbital@127.0.0.1:5432/orbital?sslmode=disable"))
+	postgres, err := db.OpenPostgres(startup, config.Env("DATABASE_URL", "postgres://orbital:orbital@127.0.0.1:5432/orbital?sslmode=disable"))
 	if err != nil {
 		return err
 	}
-	defer store.Close()
+	defer postgres.Close()
+
+	var cache scores.LeaderboardCache
+	if url := config.Env("REDIS_URL", ""); url != "" {
+		redis, err := db.NewRedisLeaderboardCache(url)
+		if err != nil {
+			return err
+		}
+		defer redis.Close()
+		cache = redis
+	}
+	store := scores.NewStore(postgres, cache)
 
 	consumer, err := broker.OpenConsumer(startup)
 	cancel()
@@ -42,7 +53,7 @@ func run(ctx context.Context) error {
 	protocols.SetUnencryptedHTTP2(true)
 	server := &http.Server{
 		Addr:              config.Env("SCORES_LISTEN", ":8081"),
-		Handler:           api.NewScoresHandler(store),
+		Handler:           api.NewScoresHandler(store, postgres.Ready),
 		ReadHeaderTimeout: 5 * time.Second,
 		WriteTimeout:      5 * time.Second,
 		Protocols:         protocols,
