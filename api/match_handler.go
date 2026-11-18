@@ -62,6 +62,7 @@ func (h *MatchHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	// The reader stores the latest command while the session advances on its own timer.
 	var playerInput atomic.Uint32
+	batches := make(chan []pickupClaim, 4)
 	go func() {
 		defer cancel()
 		for {
@@ -70,18 +71,35 @@ func (h *MatchHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			playerInput.Store(input.Direction)
+			if len(input.Pickups) > 0 && len(input.Pickups) <= arena.CrystalCount {
+				select {
+				case batches <- input.Pickups:
+				case <-ctx.Done():
+					return
+				}
+			}
 		}
 	}()
 
 	playerDirection := func() arena.Point {
 		return decodeDirection(playerInput.Load())
 	}
+	pickups := pickupTracker{
+		resolved: make(map[pickupClaim]bool),
+		pending:  make(map[pickupClaim]time.Time),
+	}
 	sendFrame := func(frame arena.Frame) error {
-		return writeFrame(ctx, conn, frame)
+		return writeFrame(ctx, conn, struct {
+			arena.Frame
+			PickupAcks []pickupAck `json:"pickupAcks,omitempty"`
+		}{frame, pickups.update(frame, batches, time.Now())})
 	}
 	end := game.RunSession(ctx, arena.PilotName(first.Name), h.results, playerDirection, sendFrame)
 	if end != nil {
-		_ = writeFrame(ctx, conn, end)
+		_ = writeFrame(ctx, conn, struct {
+			*game.RoundEnd
+			PickupAcks []pickupAck `json:"pickupAcks,omitempty"`
+		}{end, pickups.update(end.Frame, batches, time.Now())})
 		_ = conn.Close(websocket.StatusNormalClosure, "round complete")
 	}
 }

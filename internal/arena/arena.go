@@ -26,11 +26,13 @@ type Ship struct {
 }
 
 type Frame struct {
-	Phase     string              `json:"phase"`
-	Remaining int64               `json:"remainingMs"`
-	Player    Ship                `json:"player"`
-	Bot       Ship                `json:"bot"`
-	Crystals  [CrystalCount]Point `json:"crystals"`
+	Phase           string               `json:"phase"`
+	Remaining       int64                `json:"remainingMs"`
+	Player          Ship                 `json:"player"`
+	Bot             Ship                 `json:"bot"`
+	Crystals        [CrystalCount]Point  `json:"crystals"`
+	CrystalVersions [CrystalCount]uint32 `json:"crystalVersions"`
+	PickedByPlayer  [CrystalCount]bool   `json:"-"`
 }
 
 type Result struct {
@@ -85,9 +87,11 @@ func (m *Match) Step(now time.Time, player, bot Point) {
 		switch {
 		case playerDistance < 24 && playerDistance <= botDistance:
 			m.Player.Score++
+			m.PickedByPlayer[i] = true
 			m.respawn(i)
 		case botDistance < 24:
 			m.Bot.Score++
+			m.PickedByPlayer[i] = false
 			m.respawn(i)
 		}
 	}
@@ -124,6 +128,7 @@ func (m *Match) respawn(index int) {
 		}
 		if clear {
 			m.Crystals[index] = p
+			m.CrystalVersions[index]++
 			return
 		}
 	}

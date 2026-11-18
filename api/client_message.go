@@ -3,8 +3,9 @@ package api
 import "orbitalrun/internal/arena"
 
 type clientMessage struct {
-	Name      string `json:"name"`
-	Direction uint32 `json:"direction"`
+	Name      string        `json:"name"`
+	Direction uint32        `json:"direction"`
+	Pickups   []pickupClaim `json:"pickups"`
 }
 
 // The browser sets one bit per pressed direction. The values are part of the WebSocket protocol.
